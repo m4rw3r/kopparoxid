@@ -122,7 +122,7 @@ mod ctrl {
         
         Delete,
         
-        Byte(u8),
+        Unicode(u32),
         
         Index,
         NextLine,
@@ -218,6 +218,7 @@ mod ctrl {
         CSI,
         OSC,
         CharAttr,
+        Unicode(u32, u8),
     }
     
     pub struct Parser<T: io::Read> {
@@ -334,6 +335,16 @@ mod ctrl {
         })
     );
     
+    static UTF8_TRAILING: [u8; 256] = [
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3,4,4,4,4,5,5,5,5];
+    
     impl<T: io::Read> Iterator for Parser<T> {
         type Item = Seq;
         
@@ -353,7 +364,31 @@ mod ctrl {
                         
                         0x1B => self.state = ParserState::ESC,
                         
-                        c => return Some(Seq::Byte(c)),
+                        c if c > 127 => {
+                            let tail = UTF8_TRAILING[c as usize];
+                            let chr  = (c as u32) & (0xff >> (tail + 2));
+                            
+                            self.state = ParserState::Unicode(chr, tail - 1)
+                        },
+                        c => return Some(Seq::Unicode(c as u32)),
+                    },
+                    ParserState::Unicode(chr, 0) => match next_char!(self) {
+                        c if c > 127 => {
+                            self.state = ParserState::Default;
+                        
+                            return Some(Seq::Unicode((chr << 6) + ((c as u32) & 0x3f)));
+                        },
+                        c => {
+                            println!("Invalid UTF-8 sequence: {:x}", c);
+                        }
+                    },
+                    ParserState::Unicode(chr, i) => match next_char!(self) {
+                        c if c > 127 => {
+                            self.state = ParserState::Unicode((chr << 6) + ((c as u32) & 0x3f), i - 1);
+                        },
+                        c => {
+                            println!("Invalid UTF-8 sequence: {:x}", c);
+                        }
                     },
                     ParserState::ESC => match next_char!(self) {
                         b'D' => return_reset!(self, Seq::Index), /* IND */
