@@ -1,4 +1,3 @@
-#![feature(std_misc)]
 #![feature(libc)]
 #![feature(core)]
 #![feature(slice_patterns)]
@@ -8,6 +7,7 @@ extern crate clock_ticks;
 extern crate core;
 extern crate errno;
 
+/// Module for handling pseudoterminals
 mod pty {
     use std::io::{Error, Read, Result, Write};
     use std::ptr;
@@ -25,6 +25,8 @@ mod pty {
     }
     
     impl Fd {
+        /// Overrides the specified file-descriptor given with the
+        /// internal file-descriptor.
         pub fn override_fd(&self, fd: libc::c_int) -> Result<()> {
             unsafe {
                 match libc::dup2(self.fd, fd) {
@@ -34,7 +36,7 @@ mod pty {
             }
         }
         
-        pub fn set_noblock(&self) {
+        pub fn set_noblock(&mut self) {
             unsafe {
                 match libc::fcntl(self.fd, libc::F_SETFL, libc::fcntl(self.fd, libc::F_GETFL) | libc::O_NONBLOCK) {
                     -1 => panic!(Error::last_os_error()),
@@ -83,6 +85,8 @@ mod pty {
         }
     }
     
+    /// Opens a new pseudoterminal returning the filedescriptors for master
+    /// and slave.
     pub fn open() -> Result<(Fd, Fd)> {
         let mut m: libc::c_int = 0;
         let mut s: libc::c_int = 0;
@@ -253,6 +257,7 @@ mod ctrl {
         })
     );
     
+    /// Retrieves the next character from the internal iterator.
     macro_rules! next_char (
         ( $me:ident ) => ( match $me.src.next() {
             Some(Ok(c))    => c,
@@ -260,11 +265,15 @@ mod ctrl {
                 println!("Error during parsing: {}", err);
                 
                 return None
-            }
+            },
             None           => return None
         } )
     );
     
+    /// Returns the next int (or None) from the buffer, separated by ';'.
+    /// 
+    /// Parses up to the next ';' or the end of the buffer (throwing away
+    /// the ';', leaving the reset present in the buffer.
     macro_rules! buf_next_int (
         ( $me:ident ) => (
             String::from_utf8(match $me.buf.iter().position(|c| *c == b';') {
@@ -282,6 +291,11 @@ mod ctrl {
         )
     );
     
+    /// Prints a warning message that a control sequence introducer, attempts
+    /// to print the result as a unicode string if possible, otheriwse dumps
+    /// byte array.
+    /// 
+    /// Resets state and buffer.
     macro_rules! unknown_csi (
         ( $me:ident ) => ({
             match str::from_utf8(&$me.buf[..]) {
@@ -310,6 +324,8 @@ mod ctrl {
         });
     );
     
+    /// Returns the given sequence entry and resets the parser state.
+    /// Does NOT reset the buffer.
     macro_rules! return_reset (
         ( $me:ident, $ret:expr ) => ({
             $me.state = ParserState::Default;
@@ -507,30 +523,27 @@ extern fn interrupt(_:i32) {
 }
 
 fn run_sh(m: pty::Fd, s: pty::Fd) {
-    use libc::STDIN_FILENO;
-    use libc::STDOUT_FILENO;
-    use libc::STDERR_FILENO;
+    use libc;
+    use std::process;
     
     /* Get rid of the master fd before running the shell */
     drop(m);
     
-    s.override_fd(STDIN_FILENO).unwrap();
-    s.override_fd(STDOUT_FILENO).unwrap();
-    s.override_fd(STDERR_FILENO).unwrap();
+    s.override_fd(libc::STDIN_FILENO).unwrap();
+    s.override_fd(libc::STDOUT_FILENO).unwrap();
+    s.override_fd(libc::STDERR_FILENO).unwrap();
     
     /* This will never return unless the shell command exits with error */
     print!("{}", execvp("zsh", &["-i"]));
     
-    std::process::exit(-1);
+    process::exit(-1);
 }
 
 fn main() {
-    use std::io;
-    use std::io::Read;
-    use std::io::Write;
-    use libc;
     use clock_ticks;
-    use std::time::Duration;
+    use libc;
+    use std::io;
+    use std::process;
     use std::thread;
     
     let (mut m, s) = pty::open().unwrap();
@@ -562,8 +575,6 @@ fn main() {
                 while accumulator >= FIXED_TIME_STAMP {
                     accumulator -= FIXED_TIME_STAMP;
                     
-                    println!("Frame");
-                    
                     loop {
                         match p.next() {
                             Some(c) => println!("code"),
@@ -574,22 +585,6 @@ fn main() {
                 
                 thread::sleep_ms(((FIXED_TIME_STAMP - accumulator) / 1000000) as u32);
             }
-            
-            
-            /*loop {
-                let mut v = [0;30];
-                
-                match m.read(&mut v) {
-                    Ok(0)  => {},
-                    Ok(n)  => {
-                        print!("{:?}\n", &v[..n]);
-                        std::io::stdout().write(&v[..n]).unwrap();
-                        print!("\n");
-                        // print!("{}\n", from_utf8(&v[..n -1]).unwrap())
-                    },
-                    Err(e) => panic!(e)
-                }
-            }*/
          }
     }
 }
