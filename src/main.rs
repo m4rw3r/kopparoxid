@@ -6,6 +6,7 @@ extern crate libc;
 extern crate clock_ticks;
 extern crate core;
 extern crate errno;
+extern crate glutin;
 
 /// Module for handling pseudoterminals
 mod pty {
@@ -595,9 +596,16 @@ fn main() {
             
             m.set_noblock();
             
+            
             print!("Starting");
             
-            let mut p              = ctrl::new_parser(io::BufReader::with_capacity(100, m));
+            let mut p      = ctrl::new_parser(io::BufReader::with_capacity(100, m));
+            let mut window = glutin::Window::new().unwrap();
+            
+            window.set_title("rust_term");
+            
+            unsafe { window.make_current() };
+            
             let mut accumulator    = 0;
             let mut previous_clock = clock_ticks::precise_time_ns();
             
@@ -612,9 +620,20 @@ fn main() {
                     
                     loop {
                         match p.next() {
-                            Some(c) => println!("code"),
+                            Some(ctrl::Seq::SetWindowTitle(ref title)) => window.set_title(title),
+                            Some(c) => println!("> {:?}", c),
                             None    => break
                         }
+                    }
+                    
+                    window.swap_buffers();
+                    
+                    for i in window.poll_events() {
+                        println!("w {:?}", i)
+                    }
+                    
+                    if window.is_closed() {
+                        process::exit(0);
                     }
                 }
                 
