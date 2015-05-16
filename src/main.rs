@@ -7,6 +7,8 @@ extern crate clock_ticks;
 extern crate core;
 extern crate errno;
 extern crate glutin;
+#[macro_use]
+extern crate glium;
 
 /// Module for handling pseudoterminals
 mod pty {
@@ -574,6 +576,13 @@ fn run_sh(m: pty::Fd, s: pty::Fd) {
     
     process::exit(-1);
 }
+#[derive(Copy, Clone)]
+struct Vertex {
+    position: [f32; 2],
+    color: [f32; 3],
+}
+
+implement_vertex!(Vertex, position, color);
 
 fn main() {
     use clock_ticks;
@@ -581,6 +590,9 @@ fn main() {
     use std::io;
     use std::process;
     use std::thread;
+    use glium::DisplayBuild;
+use glium::index;
+use glium::Surface;
     
     let (mut m, s) = pty::open().unwrap();
     
@@ -600,11 +612,56 @@ fn main() {
             print!("Starting");
             
             let mut p      = ctrl::new_parser(io::BufReader::with_capacity(100, m));
-            let mut window = glutin::Window::new().unwrap();
+            let mut display = glutin::WindowBuilder::new().with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (3, 3))).build_glium().unwrap();
+
+let vertex_buffer = glium::VertexBuffer::new(&display, vec![
+    Vertex { position: [-0.5, -0.5], color: [0.0, 1.0, 0.0] },
+    Vertex { position: [ 0.0,  0.5], color: [0.0, 0.0, 1.0] },
+    Vertex { position: [ 0.5, -0.5], color: [1.0, 0.0, 0.0] },
+]);
+let indices = index::NoIndices(index::PrimitiveType::TrianglesList);
+let program = glium::Program::from_source(&display,
+    // vertex shader
+    "   #version 410
+
+        uniform mat4 matrix;
+
+        in vec2 position;
+        in vec3 color;
+
+        out vec3 v_color;
+
+        void main() {
+            gl_Position = vec4(position, 0.0, 1.0) * matrix;
+            v_color = color;
+        }
+    ",
+
+    // fragment shader
+    "   #version 410
+        in vec3 v_color;
+        out vec4 FragColor;
+
+        void main() {
+            FragColor = vec4(v_color, 1.0);
+        }
+    ",
+
+    // optional geometry shader
+    None
+).unwrap();
+let uniforms = uniform! {
+    matrix: [
+        [ 1.0, 0.0, 0.0, 0.0 ],
+        [ 0.0, 1.0, 0.0, 0.0 ],
+        [ 0.0, 0.0, 1.0, 0.0 ],
+        [ 0.0, 0.0, 0.0, 1.0 ]
+    ]
+};
             
-            window.set_title("rust_term");
+            display.get_window().map(|w| w.set_title("rust_term"));
             
-            unsafe { window.make_current() };
+            unsafe { display.get_window().map(|w| w.make_current()); };
             
             let mut accumulator    = 0;
             let mut previous_clock = clock_ticks::precise_time_ns();
@@ -620,19 +677,26 @@ fn main() {
                     
                     loop {
                         match p.next() {
-                            Some(ctrl::Seq::SetWindowTitle(ref title)) => window.set_title(title),
+                            Some(ctrl::Seq::SetWindowTitle(ref title)) => {
+                                display.get_window().map(|w| w.set_title(title));
+                            },
                             Some(c) => println!("> {:?}", c),
                             None    => break
                         }
                     }
                     
-                    window.swap_buffers();
+let mut target = display.draw();
+target.clear_color(0.0, 0.0, 0.0, 0.0);  // filling the output with the black color
+target.draw(&vertex_buffer, &indices, &program, &uniforms,
+            &std::default::Default::default()).unwrap();
+target.finish();
+                    // display.get_window().map(|w| w.swap_buffers());
                     
-                    for i in window.poll_events() {
+                    for i in display.poll_events() {
                         println!("w {:?}", i)
                     }
                     
-                    if window.is_closed() {
+                    if display.is_closed() {
                         process::exit(0);
                     }
                 }
