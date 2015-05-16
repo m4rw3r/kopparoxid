@@ -1,10 +1,5 @@
-#![feature(libc)]
-#![feature(core)]
-#![feature(slice_patterns)]
-#![feature(collections)]
 extern crate libc;
 extern crate clock_ticks;
-extern crate core;
 extern crate errno;
 extern crate glutin;
 #[macro_use]
@@ -105,9 +100,7 @@ mod pty {
 
 mod ctrl {
     use std::io;
-    use std::mem;
     use std::str;
-    use core::str::StrExt;
     
     #[derive(Debug)]
     pub enum Seq {
@@ -232,13 +225,28 @@ mod ctrl {
     
     macro_rules! parse_osc (
         ( $me:ident ) => ({
-            let r = match &$me.buf[..] {
-                [b'0', b';', ..] => Some(Seq::SetWindowTitle(String::from_str(str::from_utf8(&$me.buf[2..]).unwrap()))), // And icon name
-                [b'1', b';', ..] => Some(Seq::SetIconName(String::from_str(str::from_utf8(&$me.buf[2..]).unwrap()))),
-                [b'2', b';', ..] => Some(Seq::SetWindowTitle(String::from_str(str::from_utf8(&$me.buf[2..]).unwrap()))),
-                [b'3', b';', ..] => Some(Seq::SetXProps(String::from_str(str::from_utf8(&$me.buf[2..]).unwrap()))),
-                [b'4', b';', ..] => Some(Seq::SetColorNumber(String::from_str(str::from_utf8(&$me.buf[2..]).unwrap()))),
-                
+            let r = if $me.buf.len() > 2 && $me.buf[1] == b';' {
+                match $me.buf[0] {
+                    b'0' => Some(Seq::SetWindowTitle(String::from_utf8_lossy(&$me.buf[2..]).into_owned())), // And icon name
+                    b'1' => Some(Seq::SetIconName(String::from_utf8_lossy(&$me.buf[2..]).into_owned())),
+                    b'2' => Some(Seq::SetWindowTitle(String::from_utf8_lossy(&$me.buf[2..]).into_owned())),
+                    b'3' => Some(Seq::SetXProps(String::from_utf8_lossy(&$me.buf[2..]).into_owned())),
+                    b'4' => Some(Seq::SetColorNumber(String::from_utf8_lossy(&$me.buf[2..]).into_owned())),
+                    _    => None
+                }
+            }
+            else {
+                None
+            };
+            
+            match r {
+                Some(x) => {
+                    $me.state = ParserState::Default;
+                    
+                    $me.buf.truncate(0);
+                    
+                    return Some(x);
+                },
                 _ => {
                     match str::from_utf8(&$me.buf[..]) {
                         Ok(x) => println!("Unknown OSC: {}", x),
@@ -252,12 +260,6 @@ mod ctrl {
                     continue;
                 }
             };
-            
-            $me.state = ParserState::Default;
-            
-            $me.buf.truncate(0);
-            
-            return r
         })
     );
     
@@ -282,13 +284,19 @@ mod ctrl {
         ( $me:ident ) => (
             String::from_utf8(match $me.buf.iter().position(|c| *c == b';') {
                 Some(p) => {
-                    let v = $me.buf.split_off(p + 1);
+                    let v = $me.buf[..p].to_vec();
                     
-                    $me.buf.pop();
+                    $me.buf = $me.buf[p+1..].to_vec();
                     
-                    mem::replace(&mut $me.buf, v)
+                    v
                 },
-                None => mem::replace(&mut $me.buf, Vec::new())
+                None => {
+                    let v = $me.buf.clone();
+                    
+                    $me.buf.truncate(0);
+                    
+                    v
+                }
             })
             .ok()
             .map_or(None, |s| s.parse::<u8>().ok())
@@ -611,8 +619,8 @@ use glium::Surface;
             
             print!("Starting");
             
-            let mut p      = ctrl::new_parser(io::BufReader::with_capacity(100, m));
-            let mut display = glutin::WindowBuilder::new().with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (3, 3))).build_glium().unwrap();
+            let mut p   = ctrl::new_parser(io::BufReader::with_capacity(100, m));
+            let display = glutin::WindowBuilder::new().with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (3, 3))).build_glium().unwrap();
 
 let vertex_buffer = glium::VertexBuffer::new(&display, vec![
     Vertex { position: [-0.5, -0.5], color: [0.0, 1.0, 0.0] },

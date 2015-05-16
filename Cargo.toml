@@ -7,4 +7,5 @@ authors = ["Martin Wernstål <m4rw3r@gmail.com>"]
 clock_ticks = "*"
 errno       = "*"
 glium       = "*"
+libc        = "*"
 glutin      = "*"
