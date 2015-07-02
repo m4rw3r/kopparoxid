@@ -93,6 +93,8 @@ let uniforms = uniform! {
             
             let mut accumulator    = 0;
             let mut previous_clock = clock_ticks::precise_time_ns();
+            let mut has_data       = false;
+            let mut prev_win_size  = display.get_window().and_then(|w| w.get_inner_size());
             
             loop {
                 let now = clock_ticks::precise_time_ns();
@@ -105,13 +107,21 @@ let uniforms = uniform! {
                     
                     loop {
                         match p.next() {
-                            Some(ctrl::Seq::SetWindowTitle(ref title)) => {
-                                display.get_window().map(|w| w.set_title(title));
+                            Some(c) => {
+                                has_data = true;
+                                
+                                match c {
+                                    ctrl::Seq::SetWindowTitle(ref title) => {
+                                        display.get_window().map(|w| w.set_title(title));
+                                    },
+                                    c                                    => println!("> {:?}", c)
+                                }
                             },
-                            Some(c) => println!("> {:?}", c),
                             None    => break
                         }
                     }
+                    
+                    if has_data {
                     
 let mut target = display.draw();
 target.clear_color(0.0, 0.0, 0.0, 0.0);  // filling the output with the black color
@@ -119,13 +129,23 @@ target.draw(&vertex_buffer, &indices, &program, &uniforms,
             &std::default::Default::default()).unwrap();
 target.finish();
                     // display.get_window().map(|w| w.swap_buffers());
-                    
-                    for i in display.poll_events() {
-                        println!("w {:?}", i)
                     }
                     
-                    if display.is_closed() {
-                        process::exit(0);
+                    for i in display.poll_events() {
+                        match i {
+                            glutin::Event::Closed => process::exit(0),
+                            _                     => println!("w {:?}", i)
+                        }
+                    }
+                    
+                    let win_size  = display.get_window().and_then(|w| w.get_inner_size());
+                    
+                    if win_size != prev_win_size {
+                        prev_win_size = win_size;
+                        has_data      = true;
+                    }
+                    else {
+                        has_data = false;
                     }
                 }
                 
