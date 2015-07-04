@@ -1,7 +1,7 @@
-use std::io::{Error, Read, Result, Write};
+use std::io;
 use std::ptr;
 use libc;
-use errno::errno;
+use errno;
 
 #[link(name = "util")]
 extern {
@@ -16,10 +16,10 @@ pub struct Fd {
 impl Fd {
     /// Overrides the specified file-descriptor given with the
     /// internal file-descriptor.
-    pub fn override_fd(&self, fd: libc::c_int) -> Result<()> {
+    pub fn override_fd(&self, fd: libc::c_int) -> io::Result<()> {
         unsafe {
             match libc::dup2(self.fd, fd) {
-                -1 => Err(Error::last_os_error()),
+                -1 => Err(io::Error::last_os_error()),
                 _  => Ok(()),
             }
         }
@@ -28,7 +28,7 @@ impl Fd {
     pub fn set_noblock(&mut self) {
         unsafe {
             match libc::fcntl(self.fd, libc::F_SETFL, libc::fcntl(self.fd, libc::F_GETFL) | libc::O_NONBLOCK) {
-                -1 => panic!(Error::last_os_error()),
+                -1 => panic!(io::Error::last_os_error()),
                 _  => ()
             }
         }
@@ -45,13 +45,13 @@ impl Drop for Fd {
 
 const EAGAIN: libc::c_int = libc::EAGAIN as libc::c_int;
 
-impl Read for Fd {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+impl io::Read for Fd {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         unsafe {
             match libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as libc::size_t) {
-                -1 => match errno().0 {
+                -1 => match errno::errno().0 {
                     EAGAIN => Ok(0),
-                    _      => Err(Error::last_os_error())
+                    _      => Err(io::Error::last_os_error())
                 },
                 r  => Ok(r as usize),
             }
@@ -59,39 +59,38 @@ impl Read for Fd {
     }
 }
 
-impl Write for Fd {
-    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+impl io::Write for Fd {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         unsafe {
             match libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len() as u64) {
-                -1 => Err(Error::last_os_error()),
+                -1 => Err(io::Error::last_os_error()),
                 r  => Ok(r as usize),
             }
         }
     }
     
-    fn flush(&mut self) -> Result<()> {
+    fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
 
 /// Opens a new pseudoterminal returning the filedescriptors for master
 /// and slave.
-pub fn open() -> Result<(Fd, Fd)> {
+pub fn open() -> io::Result<(Fd, Fd)> {
     let mut m: libc::c_int = 0;
     let mut s: libc::c_int = 0;
     
     unsafe {
         match openpty(&mut m, &mut s, ptr::null(), ptr::null(), ptr::null()) {
-            -1 => Err(Error::last_os_error()),
+            -1 => Err(io::Error::last_os_error()),
             _  => Ok((Fd{fd: m}, Fd{fd: s}))
         }
     }
 }
 
-fn execvp(cmd: &str, params: &[&str]) -> Error {
+fn execvp(cmd: &str, params: &[&str]) -> io::Error {
     use libc::execvp;
     use std::ffi::CString;
-    use std::io::Error;
     use std::ptr;
     
     let cmd      = CString::new(cmd).unwrap();
@@ -103,10 +102,10 @@ fn execvp(cmd: &str, params: &[&str]) -> Error {
         execvp(cmd.as_ptr(), args.as_mut_ptr());
     }
     
-    Error::last_os_error()
+    io::Error::last_os_error()
 }
 
-pub fn run_sh(m: Fd, s: Fd) {
+pub fn run_sh(m: Fd, s: Fd) -> ! {
     use libc;
     use std::process;
     
