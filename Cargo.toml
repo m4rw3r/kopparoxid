@@ -6,6 +6,7 @@ authors = ["Martin Wernstål <m4rw3r@gmail.com>"]
 [dependencies]
 clock_ticks = "*"
 errno       = "*"
+freetype-rs = "*"
 glium       = "*"
 libc        = "*"
 glutin      = "*"
