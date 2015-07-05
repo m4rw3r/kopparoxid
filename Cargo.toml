@@ -10,7 +10,4 @@ freetype-rs = "*"
 libc        = "*"
 glutin      = "*"
 log         = "*"
-
-[dependencies.glium]
-version              = "*"
-gl_integral_textures = true
+glium       = "*"

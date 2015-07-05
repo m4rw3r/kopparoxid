@@ -1,8 +1,11 @@
 use glium;
 use std::cmp;
 
+use glium::Surface;
+
 const GROWTH_FACTOR: u32 = 2;
 
+#[derive(Debug)]
 pub struct Atlas<'a, F> where F: 'a + glium::backend::Facade {
     context:    &'a F,
     used:       (u32, u32),
@@ -12,17 +15,19 @@ pub struct Atlas<'a, F> where F: 'a + glium::backend::Facade {
 
 impl<'a, F> Atlas<'a, F> where F: 'a + glium::backend::Facade {
     pub fn new(facade: &'a F, width: u32, height: u32) -> Self {
+        let tex = glium::Texture2d::empty_with_format(facade, glium::texture::UncompressedFloatFormat::U8, glium::texture::MipmapsOption::NoMipmap, width, height).unwrap();
+
+        tex.as_surface().clear(None, Some((0.0, 0.0, 0.0, 0.0)), None, None);
+
         Atlas {
             context:    facade,
             used:       (0, 0),
             row_height: 0,
-            texture:    glium::texture::Texture2d::empty_with_format(facade, glium::texture::UncompressedFloatFormat::U8, glium::texture::MipmapsOption::NoMipmap, width, height).unwrap(),
+            texture:    tex,
         }
     }
 
     pub fn add<P: glium::texture::PixelValue + Clone>(&mut self, raw: glium::texture::RawImage2d<P>) -> glium::Rect {
-        use glium::Surface;
-
         let size         = (raw.width, raw.height);
         let cur_size     = (self.texture.get_width(), self.texture.get_height().unwrap_or(1));
         let mut new_size = cur_size;
@@ -45,13 +50,11 @@ impl<'a, F> Atlas<'a, F> where F: 'a + glium::backend::Facade {
         }
 
         if cur_size != new_size {
-            info!("Reallocating atlas from {:?} to {:?} for request {:?}", cur_size, new_size, size);
-
             let img: Vec<_> = self.texture.read();
             let h           = self.texture.get_height().unwrap_or(1);
             let w           = self.texture.get_width();
 
-            self.texture = glium::texture::Texture2d::empty_with_format(self.context, glium::texture::UncompressedFloatFormat::U8, glium::texture::MipmapsOption::NoMipmap, new_size.0, new_size.1).unwrap();
+            self.texture = glium::Texture2d::empty_with_format(self.context, glium::texture::UncompressedFloatFormat::U8, glium::texture::MipmapsOption::NoMipmap, new_size.0, new_size.1).unwrap();
 
             self.texture.as_surface().clear(None, Some((0.0, 0.0, 0.0, 0.0)), None, None);
 
@@ -80,5 +83,9 @@ impl<'a, F> Atlas<'a, F> where F: 'a + glium::backend::Facade {
 
     pub fn texture(&self) -> &glium::Texture2d {
         &self.texture
+    }
+    
+    pub fn texture_size(&self) -> (u32, u32) {
+        (self.texture.get_width(), self.texture.get_height().unwrap_or(1))
     }
 }
