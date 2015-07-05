@@ -7,6 +7,7 @@ extern crate glium;
 extern crate freetype as ft;
 
 use std::collections;
+use std::cmp;
 
 mod ctrl;
 mod pty;
@@ -34,6 +35,7 @@ struct TexturedVertex {
     xy:     [f32; 2],
     fg_rgb: [f32; 3],
     bg_rgb: [f32; 3],
+    /* Texture coordinates: */
     st:     [f32; 2],
 }
 
@@ -41,20 +43,24 @@ implement_vertex!(TexturedVertex, xy, fg_rgb, bg_rgb, st);
 
 #[derive(Copy, Clone, Debug)]
 struct Glyph {
-    tex_area: glium::Rect,
+    tex_area:  glium::Rect,
+    top:       i32,
+    bottom:    i32,
+    left:      i32,
+    advance_x: i32,
 }
 
 impl Glyph {
-    fn vertices(&self, p: glium::Rect, tex_size: (u32, u32), fg: [f32; 3], bg: [f32; 3]) -> [TexturedVertex; 6] {
-        let l = p.left                as f32;
-        let r = (p.left + p.width)    as f32;
-        let b = p.bottom              as f32;
-        let t = (p.bottom + p.height) as f32;
+    fn vertices(&self, p: (f32, f32), s: (f32, f32), tex_size: (u32, u32), fg: [f32; 3], bg: [f32; 3]) -> [TexturedVertex; 6] {
+        let l = p.0         as f32;
+        let r = (p.0 + s.0) as f32;
+        let b = p.1         as f32;
+        let t = (p.1 + s.1) as f32;
         
-        let tl = self.tex_area.left as f32 / (tex_size.0 as f32);
-        let tr = (self.tex_area.left + self.tex_area.width) as f32 / (tex_size.0 as f32);
-        let tb = self.tex_area.bottom as f32 / (tex_size.1 as f32);
-        let tt = (self.tex_area.bottom + self.tex_area.height) as f32 / (tex_size.1 as f32);
+        let tl = (self.tex_area.left as i32 - self.left)                                   as f32 / tex_size.0 as f32;
+        let tr = (self.tex_area.left as i32 - self.left + self.advance_x)                  as f32 / tex_size.0 as f32;
+        let tb = (self.tex_area.bottom as i32 - self.top)                                  as f32 / tex_size.1 as f32;
+        let tt = (self.tex_area.bottom as i32 + self.bottom + self.tex_area.height as i32) as f32 / tex_size.1 as f32;
 
         [
             TexturedVertex { xy: [l, b], fg_rgb: fg, bg_rgb: bg, st: [tl, tt] },
@@ -70,21 +76,21 @@ impl Glyph {
 
 #[derive(Debug)]
 struct GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
-    ft_face: &'a ft::Face<'a>,
-    glyphs:  collections::BTreeMap<usize, Glyph>,
-    atlas:   tex::Atlas<'a, F>
+    ft_face:  ft::Face<'a>,
+    glyphs:   collections::BTreeMap<usize, Glyph>,
+    atlas:    tex::Atlas<'a, F>
 }
 
 impl<'a, F> GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
-    fn new(display: &'a F, ft_face: &'a ft::Face) -> Self {
+    fn new(display: &'a F, ft_face: ft::Face<'a>) -> Self {
         GlyphMap::new_with_size(display, ft_face, 1000)
     }
     
-    fn new_with_size(display: &'a F, ft_face: &'a ft::Face, atlas_size: u32) -> Self {
+    fn new_with_size(display: &'a F, ft_face: ft::Face<'a>, atlas_size: u32) -> Self {
         GlyphMap {
-            ft_face: ft_face,
-            glyphs:  collections::BTreeMap::new(),
-            atlas:   tex::Atlas::new(display, atlas_size, atlas_size),
+            ft_face:  ft_face,
+            glyphs:   collections::BTreeMap::new(),
+            atlas:    tex::Atlas::new(display, atlas_size, atlas_size),
         }
     }
     
@@ -98,7 +104,9 @@ impl<'a, F> GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
         
         self.ft_face.load_char(glyph, ft::face::RENDER).unwrap();
         
-        let glyph_bitmap = self.ft_face.glyph().bitmap();
+        let g = self.ft_face.glyph();
+        
+        let glyph_bitmap = g.bitmap();
         let r = self.atlas.add(texture::RawImage2d{
             data:   Cow::Borrowed(glyph_bitmap.buffer()),
             width:  glyph_bitmap.width() as u32,
@@ -106,8 +114,17 @@ impl<'a, F> GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
             format: texture::ClientFormat::U8
         });
         
+        let height   = self.ft_face.size_metrics().unwrap().height;
+        let ascender = self.ft_face.size_metrics().unwrap().ascender;
+        
+        let top = (ascender >> 6) as i32  - g.bitmap_top();
+        
         let g = Glyph {
-            tex_area: r
+            tex_area:  r,
+            top:       top,
+            bottom:    (height >> 6) as i32 - top - glyph_bitmap.rows(),
+            left:      g.bitmap_left(),
+            advance_x: (g.advance().x >> 6) as i32,
         };
         
         self.glyphs.insert(glyph, g.clone());
@@ -131,9 +148,7 @@ fn window(mut m: pty::Fd) {
     use std::thread;
     use glium::DisplayBuild;
     use glium::index;
-    use glium::texture;
     use glium::Surface;
-    use std::borrow::Cow;
     
     m.set_noblock();
     
@@ -148,15 +163,33 @@ fn window(mut m: pty::Fd) {
     
     ft_face.set_char_size(16 * 27, 0, 72 * 27, 0).unwrap();
     
-    let mut m = GlyphMap::new(&display, &ft_face);
+    let mut m = GlyphMap::new(&display, ft_face);
     
-    for c in 32..126 {
-        println!("{:?}", m.load(c));
+    for c in "Rust".chars() {
+        m.load(c as usize);
     }
     
-    let R = m.load('R' as usize).vertices(glium::Rect{left: 0, bottom: 0, height: 1, width: 1}, m.texture_size(), [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    let mut vertices: Vec<TexturedVertex> = Vec::new();
+    
+    let R = m.load('R' as usize).vertices((-1.0, -1.0), (0.5, 2.0), m.texture_size(), [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    let u = m.load('u' as usize).vertices((-0.5, -1.0), (0.5, 2.0), m.texture_size(), [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    let s = m.load('s' as usize).vertices(( 0.0, -1.0), (0.5, 2.0), m.texture_size(), [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    let t = m.load('t' as usize).vertices(( 0.5, -1.0), (0.5, 2.0), m.texture_size(), [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
+    
+    for v in R.into_iter() {
+        vertices.push(*v);
+    }
+    for v in u.into_iter() {
+        vertices.push(*v);
+    }
+    for v in s.into_iter() {
+        vertices.push(*v);
+    }
+    for v in t.into_iter() {
+        vertices.push(*v);
+    }
 
-    let vertex_buffer = glium::VertexBuffer::new(&display, R);
+    let vertex_buffer = glium::VertexBuffer::new(&display, vertices);
     let indices = index::NoIndices(index::PrimitiveType::TrianglesList);
     let program = glium::Program::from_source(&display,
         // vertex shader
