@@ -3,10 +3,10 @@ extern crate clock_ticks;
 extern crate errno;
 extern crate glutin;
 #[macro_use]
-extern crate log;
-#[macro_use]
 extern crate glium;
 extern crate freetype as ft;
+
+use std::collections;
 
 mod ctrl;
 mod pty;
@@ -39,6 +39,91 @@ struct TexturedVertex {
 
 implement_vertex!(TexturedVertex, xy, fg_rgb, bg_rgb, st);
 
+#[derive(Copy, Clone, Debug)]
+struct Glyph {
+    tex_area: glium::Rect,
+}
+
+impl Glyph {
+    fn vertices(&self, p: glium::Rect, tex_size: (u32, u32), fg: [f32; 3], bg: [f32; 3]) -> [TexturedVertex; 6] {
+        let l = p.left                as f32;
+        let r = (p.left + p.width)    as f32;
+        let b = p.bottom              as f32;
+        let t = (p.bottom + p.height) as f32;
+        
+        let tl = self.tex_area.left as f32 / (tex_size.0 as f32);
+        let tr = (self.tex_area.left + self.tex_area.width) as f32 / (tex_size.0 as f32);
+        let tb = self.tex_area.bottom as f32 / (tex_size.1 as f32);
+        let tt = (self.tex_area.bottom + self.tex_area.height) as f32 / (tex_size.1 as f32);
+
+        [
+            TexturedVertex { xy: [l, b], fg_rgb: fg, bg_rgb: bg, st: [tl, tt] },
+            TexturedVertex { xy: [l, t], fg_rgb: fg, bg_rgb: bg, st: [tl, tb] },
+            TexturedVertex { xy: [r, t], fg_rgb: fg, bg_rgb: bg, st: [tr, tb] },
+
+            TexturedVertex { xy: [r, t], fg_rgb: fg, bg_rgb: bg, st: [tr, tb] },
+            TexturedVertex { xy: [r, b], fg_rgb: fg, bg_rgb: bg, st: [tr, tt] },
+            TexturedVertex { xy: [l, b], fg_rgb: fg, bg_rgb: bg, st: [tl, tt] },
+        ]
+    }
+}
+
+#[derive(Debug)]
+struct GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
+    ft_face: &'a ft::Face<'a>,
+    glyphs:  collections::BTreeMap<usize, Glyph>,
+    atlas:   tex::Atlas<'a, F>
+}
+
+impl<'a, F> GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
+    fn new(display: &'a F, ft_face: &'a ft::Face) -> Self {
+        GlyphMap::new_with_size(display, ft_face, 1000)
+    }
+    
+    fn new_with_size(display: &'a F, ft_face: &'a ft::Face, atlas_size: u32) -> Self {
+        GlyphMap {
+            ft_face: ft_face,
+            glyphs:  collections::BTreeMap::new(),
+            atlas:   tex::Atlas::new(display, atlas_size, atlas_size),
+        }
+    }
+    
+    fn load(&mut self, glyph: usize) -> Glyph {
+        use std::borrow::Cow;
+        use glium::texture;
+        
+        if let Some(g) = self.glyphs.get(&glyph) {
+            return *g
+        }
+        
+        self.ft_face.load_char(glyph, ft::face::RENDER).unwrap();
+        
+        let glyph_bitmap = self.ft_face.glyph().bitmap();
+        let r = self.atlas.add(texture::RawImage2d{
+            data:   Cow::Borrowed(glyph_bitmap.buffer()),
+            width:  glyph_bitmap.width() as u32,
+            height: glyph_bitmap.rows() as u32,
+            format: texture::ClientFormat::U8
+        });
+        
+        let g = Glyph {
+            tex_area: r
+        };
+        
+        self.glyphs.insert(glyph, g.clone());
+        
+        g
+    }
+    
+    fn texture(&self) -> &glium::Texture2d {
+        self.atlas.texture()
+    }
+    
+    fn texture_size(&self) -> (u32, u32) {
+        self.atlas.texture_size()
+    }
+}
+
 fn window(mut m: pty::Fd) {
     use clock_ticks;
     use std::io;
@@ -52,8 +137,6 @@ fn window(mut m: pty::Fd) {
     
     m.set_noblock();
     
-    println!("Starting");
-    
     let mut p   = ctrl::new_parser(io::BufReader::with_capacity(100, m));
     let display = glutin::WindowBuilder::new()
         .with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (3, 3)))
@@ -65,31 +148,15 @@ fn window(mut m: pty::Fd) {
     
     ft_face.set_char_size(16 * 27, 0, 72 * 27, 0).unwrap();
     
-    let mut a = tex::Atlas::new(&display, 200, 100);
+    let mut m = GlyphMap::new(&display, &ft_face);
     
-    for c in ['R', 'u', 's', 't'].into_iter() {
-        ft_face.load_char(*c as usize, ft::face::RENDER).unwrap();
-        
-        let glyph_bitmap = ft_face.glyph().bitmap();
-        let r = a.add(texture::RawImage2d{
-            data:   Cow::Borrowed(glyph_bitmap.buffer()),
-            width:  glyph_bitmap.width() as u32,
-            height: glyph_bitmap.rows() as u32,
-            format: texture::ClientFormat::U8
-        });
-        
-        println!("{:?}: {:?}", c, r);
+    for c in 32..126 {
+        println!("{:?}", m.load(c));
     }
+    
+    let R = m.load('R' as usize).vertices(glium::Rect{left: 0, bottom: 0, height: 1, width: 1}, m.texture_size(), [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
 
-    let vertex_buffer = glium::VertexBuffer::new(&display, vec![
-        TexturedVertex { xy: [-0.5f32,  0.5f32], fg_rgb: [1f32, 0f32, 0f32], bg_rgb: [1.0, 0.0, 0.0], st: [0f32, 0f32] },
-        TexturedVertex { xy: [-0.5f32, -0.5f32], fg_rgb: [0f32, 1f32, 0f32], bg_rgb: [1.0, 0.0, 0.0], st: [0f32, 1f32] },
-        TexturedVertex { xy: [ 0.5f32, -0.5f32], fg_rgb: [0f32, 0f32, 1f32], bg_rgb: [1.0, 0.0, 0.0], st: [1f32, 1f32] },
-
-        TexturedVertex { xy: [ 0.5f32, -0.5f32], fg_rgb: [0f32, 0f32, 1f32], bg_rgb: [1.0, 0.0, 0.0], st: [1f32, 1f32] },
-        TexturedVertex { xy: [ 0.5f32,  0.5f32], fg_rgb: [1f32, 1f32, 1f32], bg_rgb: [1.0, 0.0, 0.0], st: [1f32, 0f32] },
-        TexturedVertex { xy: [-0.5f32,  0.5f32], fg_rgb: [1f32, 0f32, 0f32], bg_rgb: [1.0, 0.0, 0.0], st: [0f32, 0f32] },
-    ]);
+    let vertex_buffer = glium::VertexBuffer::new(&display, R);
     let indices = index::NoIndices(index::PrimitiveType::TrianglesList);
     let program = glium::Program::from_source(&display,
         // vertex shader
@@ -138,7 +205,7 @@ fn window(mut m: pty::Fd) {
             [ 0.0, 0.0, 1.0, 0.0 ],
             [ 0.0, 0.0, 0.0, 1.0 ],
         ],
-        tex: a.texture(),
+        tex: m.texture(),
     };
     
     let params = glium::DrawParameters::new(&display);
@@ -193,6 +260,7 @@ fn window(mut m: pty::Fd) {
             
             let win_size  = display.get_window().and_then(|w| w.get_inner_size());
             
+            // OS X does not fire glutin::Event::Resize from poll_events(), need to check manually
             if win_size != prev_win_size {
                 prev_win_size = win_size;
                 has_data      = true;
