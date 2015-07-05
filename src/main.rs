@@ -3,21 +3,14 @@ extern crate clock_ticks;
 extern crate errno;
 extern crate glutin;
 #[macro_use]
+extern crate log;
+#[macro_use]
 extern crate glium;
 extern crate freetype as ft;
 
 mod ctrl;
 mod pty;
-
-#[derive(Copy, Clone)]
-struct TexturedVertex {
-    xy:     [f32; 2],
-    fg_rgb: [f32; 3],
-    bg_rgb: [f32; 3],
-    st:     [f32; 2],
-}
-
-implement_vertex!(TexturedVertex, xy, fg_rgb, bg_rgb, st);
+mod tex;
 
 fn main() {
     use libc;
@@ -36,6 +29,16 @@ fn main() {
     }
 }
 
+#[derive(Copy, Clone)]
+struct TexturedVertex {
+    xy:     [f32; 2],
+    fg_rgb: [f32; 3],
+    bg_rgb: [f32; 3],
+    st:     [f32; 2],
+}
+
+implement_vertex!(TexturedVertex, xy, fg_rgb, bg_rgb, st);
+
 fn window(mut m: pty::Fd) {
     use clock_ticks;
     use std::io;
@@ -44,7 +47,6 @@ fn window(mut m: pty::Fd) {
     use glium::DisplayBuild;
     use glium::index;
     use glium::texture;
-    use glium::texture::Texture2dDataSource;
     use glium::Surface;
     use std::borrow::Cow;
     
@@ -58,38 +60,41 @@ fn window(mut m: pty::Fd) {
         .build_glium()
         .unwrap();
     
-    println!("Attempting to load freetype");
     let ft_lib = ft::Library::init().unwrap();
-    println!("Attempting to load font face");
     let ft_face = ft_lib.new_face("./DejaVuSansMono/DejaVu Sans Mono for Powerline.ttf", 0).unwrap();
     
-    println!("Attempting to set char size");
-    ft_face.set_char_size(0, 1000, 1000, 0).unwrap();
-    println!("Attempting load char");
-    ft_face.load_char('R' as usize, ft::face::RENDER).unwrap();
+    ft_face.set_char_size(16 * 27, 0, 72 * 27, 0).unwrap();
     
-    let glyph_bitmap = ft_face.glyph().bitmap();
-    let tex = texture::Texture2d::new(&display, texture::RawImage2d{
-        data:   Cow::Borrowed(glyph_bitmap.buffer()),
-        width:  glyph_bitmap.width() as u32,
-        height: glyph_bitmap.rows() as u32,
-        format: texture::ClientFormat::U8
-    }.into_raw());
+    let mut a = tex::Atlas::new(&display, 200, 100);
+    
+    for c in ['R', 'u', 's', 't'].into_iter() {
+        ft_face.load_char(*c as usize, ft::face::RENDER).unwrap();
+        
+        let glyph_bitmap = ft_face.glyph().bitmap();
+        let r = a.add(texture::RawImage2d{
+            data:   Cow::Borrowed(glyph_bitmap.buffer()),
+            width:  glyph_bitmap.width() as u32,
+            height: glyph_bitmap.rows() as u32,
+            format: texture::ClientFormat::U8
+        });
+        
+        println!("{:?}: {:?}", c, r);
+    }
 
     let vertex_buffer = glium::VertexBuffer::new(&display, vec![
-        TexturedVertex { xy: [-0.5f32,  0.5f32], fg_rgb: [1f32, 0f32, 0f32], bg_rgb: [0.0, 0.0, 0.0], st: [0f32, 0f32] },
-        TexturedVertex { xy: [-0.5f32, -0.5f32], fg_rgb: [0f32, 1f32, 0f32], bg_rgb: [0.0, 0.0, 0.0], st: [0f32, 1f32] },
-        TexturedVertex { xy: [ 0.5f32, -0.5f32], fg_rgb: [0f32, 0f32, 1f32], bg_rgb: [0.0, 0.0, 0.0], st: [1f32, 1f32] },
+        TexturedVertex { xy: [-0.5f32,  0.5f32], fg_rgb: [1f32, 0f32, 0f32], bg_rgb: [1.0, 0.0, 0.0], st: [0f32, 0f32] },
+        TexturedVertex { xy: [-0.5f32, -0.5f32], fg_rgb: [0f32, 1f32, 0f32], bg_rgb: [1.0, 0.0, 0.0], st: [0f32, 1f32] },
+        TexturedVertex { xy: [ 0.5f32, -0.5f32], fg_rgb: [0f32, 0f32, 1f32], bg_rgb: [1.0, 0.0, 0.0], st: [1f32, 1f32] },
 
-        TexturedVertex { xy: [ 0.5f32, -0.5f32], fg_rgb: [0f32, 0f32, 1f32], bg_rgb: [0.0, 0.0, 0.0], st: [1f32, 1f32] },
-        TexturedVertex { xy: [ 0.5f32,  0.5f32], fg_rgb: [1f32, 1f32, 1f32], bg_rgb: [0.0, 0.0, 0.0], st: [1f32, 0f32] },
-        TexturedVertex { xy: [-0.5f32,  0.5f32], fg_rgb: [1f32, 0f32, 0f32], bg_rgb: [0.0, 0.0, 0.0], st: [0f32, 0f32] },
+        TexturedVertex { xy: [ 0.5f32, -0.5f32], fg_rgb: [0f32, 0f32, 1f32], bg_rgb: [1.0, 0.0, 0.0], st: [1f32, 1f32] },
+        TexturedVertex { xy: [ 0.5f32,  0.5f32], fg_rgb: [1f32, 1f32, 1f32], bg_rgb: [1.0, 0.0, 0.0], st: [1f32, 0f32] },
+        TexturedVertex { xy: [-0.5f32,  0.5f32], fg_rgb: [1f32, 0f32, 0f32], bg_rgb: [1.0, 0.0, 0.0], st: [0f32, 0f32] },
     ]);
     let indices = index::NoIndices(index::PrimitiveType::TrianglesList);
     let program = glium::Program::from_source(&display,
         // vertex shader
         "   #version 410
-        
+
             in vec2 xy;
             in vec3 fg_rgb;
             in vec3 bg_rgb;
@@ -108,7 +113,7 @@ fn window(mut m: pty::Fd) {
             }
         ",
         "   #version 410
-        
+
             uniform sampler2D texture_diffuse;
             
             in vec3 pass_fg_rgb;
@@ -133,7 +138,7 @@ fn window(mut m: pty::Fd) {
             [ 0.0, 0.0, 1.0, 0.0 ],
             [ 0.0, 0.0, 0.0, 1.0 ],
         ],
-        tex: &tex,
+        tex: a.texture(),
     };
     
     let params = glium::DrawParameters::new(&display);
@@ -165,7 +170,7 @@ fn window(mut m: pty::Fd) {
                             ctrl::Seq::SetWindowTitle(ref title) => {
                                 display.get_window().map(|w| w.set_title(title));
                             },
-                            c                                    => println!("> {:?}", c)
+                            c                                    =>{} // println!("> {:?}", c)
                         }
                     },
                     None    => break
@@ -182,7 +187,7 @@ fn window(mut m: pty::Fd) {
             for i in display.poll_events() {
                 match i {
                     glutin::Event::Closed => process::exit(0),
-                    _                     => println!("w {:?}", i)
+                    _                     => {} // println!("w {:?}", i)
                 }
             }
             

@@ -7,6 +7,10 @@ authors = ["Martin Wernstål <m4rw3r@gmail.com>"]
 clock_ticks = "*"
 errno       = "*"
 freetype-rs = "*"
-glium       = "*"
 libc        = "*"
 glutin      = "*"
+log         = "*"
+
+[dependencies.glium]
+version              = "*"
+gl_integral_textures = true
