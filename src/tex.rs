@@ -28,24 +28,28 @@ impl<'a, F> Atlas<'a, F> where F: 'a + glium::backend::Facade {
     }
 
     pub fn add<P: glium::texture::PixelValue + Clone>(&mut self, raw: glium::texture::RawImage2d<P>) -> glium::Rect {
-        let size         = (raw.width, raw.height);
+        self.add_with_padding(raw, (0, 0, 0, 0))
+    }
+
+    pub fn add_with_padding<P: glium::texture::PixelValue + Clone>(&mut self, raw: glium::texture::RawImage2d<P>, padding: (u32, u32, u32, u32)) -> glium::Rect {
+        let req_size     = (padding.0 + raw.width + padding.2, padding.1 + raw.height + padding.3);
         let cur_size     = (self.texture.get_width(), self.texture.get_height().unwrap_or(1));
         let mut new_size = cur_size;
 
         // Extend width if necessary
-        while size.0 > new_size.0 {
+        while req_size.0 > new_size.0 {
             new_size.0 = new_size.0 * GROWTH_FACTOR;
         }
 
         // Have we used up this row? If so, end it and create a new one
-        if self.used.0 + size.0 > new_size.0 {
+        if self.used.0 + req_size.0 > new_size.0 {
             self.used.0     = 0;
             self.used.1     = self.used.1 + self.row_height;
             self.row_height = 0;
         }
 
         // Extend height if necessary
-        while self.used.1 + size.1 > new_size.1 {
+        while self.used.1 + req_size.1 > new_size.1 {
             new_size.1 = new_size.1 * GROWTH_FACTOR;
         }
 
@@ -66,17 +70,22 @@ impl<'a, F> Atlas<'a, F> where F: 'a + glium::backend::Facade {
             }, img);
         }
 
+        self.texture.write(glium::Rect{
+            left:   self.used.0 + padding.0,
+            bottom: self.used.1 + padding.1,
+            height: raw.height,
+            width:  raw.width,
+        }, raw);
+
         let r = glium::Rect{
             left:   self.used.0,
             bottom: self.used.1,
-            height: size.1,
-            width:  size.0,
+            height: req_size.1,
+            width:  req_size.0,
         };
 
-        self.texture.write(r, raw);
-
-        self.used.0     = self.used.0 + size.0;
-        self.row_height = cmp::max(self.row_height, size.1);
+        self.used.0     = self.used.0 + req_size.0;
+        self.row_height = cmp::max(self.row_height, req_size.1);
 
         r
     }
@@ -84,7 +93,7 @@ impl<'a, F> Atlas<'a, F> where F: 'a + glium::backend::Facade {
     pub fn texture(&self) -> &glium::Texture2d {
         &self.texture
     }
-    
+
     pub fn texture_size(&self) -> (u32, u32) {
         (self.texture.get_width(), self.texture.get_height().unwrap_or(1))
     }
