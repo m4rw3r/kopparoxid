@@ -69,7 +69,7 @@ pub enum EraseInDisplay {
     All,
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum CharType {
     Normal,
     Bold,
@@ -84,7 +84,7 @@ pub enum CharType {
     DoublyUnderlined,
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Color {
     Black,
     Red,
@@ -98,7 +98,13 @@ pub enum Color {
     RGB(u8, u8, u8)
 }
 
-#[derive(Debug)]
+impl Default for Color {
+    fn default() -> Color {
+        Color::Default
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum CharAttr {
     Reset,
     Set(CharType),
