@@ -35,7 +35,9 @@ pub enum Seq {
     OperatingSystemCommand,
     PrivacyMessage,
     ApplicationProgramCommand,
-    
+
+    Charset(CharsetIndex, Charset),
+
     SetKeypadMode(KeypadMode),
 
     /* CSI */
@@ -115,12 +117,42 @@ pub enum CharAttr {
     BGColor(Color),
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Charset {
+    DECSpecialAndLineDrawing,
+    DECSupplementary,
+    DECTechnical,
+    UnitedKingdom,
+    UnitedStates,
+    Dutch,
+    Finnish,
+    French,
+    FrenchCanadian,
+    German,
+    Italian,
+    NorwegianDanish,
+    Portuguese,
+    Spanish,
+    Swedish,
+    Swiss,
+    Unicode,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CharsetIndex {
+    G0,
+    G1,
+    G2,
+    G3,
+}
+
 enum ParserState {
     Default,
     ESC,
     CSI,
     OSC,
     CharAttr,
+    Charset(CharsetIndex),
     Unicode(u32, u8),
 }
 
@@ -328,6 +360,10 @@ impl<T: io::Read> Iterator for Parser<T> {
                     
                     b'>' => return_reset!(self, Seq::SetKeypadMode(KeypadMode::Numeric)),
                     b'=' => return_reset!(self, Seq::SetKeypadMode(KeypadMode::Application)),
+                    b'(' => self.state = ParserState::Charset(CharsetIndex::G0),
+                    b')' => self.state = ParserState::Charset(CharsetIndex::G1),
+                    b'*' => self.state = ParserState::Charset(CharsetIndex::G2),
+                    b'+' => self.state = ParserState::Charset(CharsetIndex::G3),
                     
                     c => {
                         print!("Unknown escape char code: {}\n", c);
@@ -438,6 +474,37 @@ impl<T: io::Read> Iterator for Parser<T> {
                     }
                     
                     return r;
+                },
+                ParserState::Charset(index) => match next_char!(self) {
+                    // FIXME: Missing the following because they are 2-char combos:
+                    // % 5  -> DEC Supplementary Graphics (VT300).
+                    // % 6  -> Portuguese (VT300).
+                    b'0' => return_reset!(self, Seq::Charset(index, Charset::DECSpecialAndLineDrawing)),
+                    b'<' => return_reset!(self, Seq::Charset(index, Charset::DECSupplementary)),
+                    b'>' => return_reset!(self, Seq::Charset(index, Charset::DECTechnical)),
+                    b'A' => return_reset!(self, Seq::Charset(index, Charset::UnitedKingdom)),
+                    b'B' => return_reset!(self, Seq::Charset(index, Charset::UnitedStates)),
+                    b'4' => return_reset!(self, Seq::Charset(index, Charset::Dutch)),
+                    b'C' => return_reset!(self, Seq::Charset(index, Charset::Finnish)),
+                    b'5' => return_reset!(self, Seq::Charset(index, Charset::Finnish)),
+                    b'R' => return_reset!(self, Seq::Charset(index, Charset::French)),
+                    b'f' => return_reset!(self, Seq::Charset(index, Charset::French)),
+                    b'Q' => return_reset!(self, Seq::Charset(index, Charset::FrenchCanadian)),
+                    b'9' => return_reset!(self, Seq::Charset(index, Charset::FrenchCanadian)),
+                    b'K' => return_reset!(self, Seq::Charset(index, Charset::German)),
+                    b'Y' => return_reset!(self, Seq::Charset(index, Charset::Italian)),
+                    b'`' => return_reset!(self, Seq::Charset(index, Charset::NorwegianDanish)),
+                    b'E' => return_reset!(self, Seq::Charset(index, Charset::NorwegianDanish)),
+                    b'6' => return_reset!(self, Seq::Charset(index, Charset::NorwegianDanish)),
+                    b'Z' => return_reset!(self, Seq::Charset(index, Charset::Spanish)),
+                    b'H' => return_reset!(self, Seq::Charset(index, Charset::Swedish)),
+                    b'7' => return_reset!(self, Seq::Charset(index, Charset::Swedish)),
+                    b'=' => return_reset!(self, Seq::Charset(index, Charset::Swiss)),
+                    c => {
+                        print!("Unknown charset code: {}\n", c);
+                            
+                        self.state = ParserState::Default;
+                    }
                 },
                 ParserState::OSC => match next_char!(self) {
                     0x5C if self.buf.iter().last() == Some(&0x1B) => {
