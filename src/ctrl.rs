@@ -14,11 +14,11 @@ pub enum Seq {
     ShiftOut,
     Tab,
     TabVertical,
-    
+
     Delete,
-    
+
     Unicode(u32),
-    
+
     Index,
     NextLine,
     TabSet,
@@ -37,11 +37,13 @@ pub enum Seq {
     ApplicationProgramCommand,
     
     SetKeypadMode(KeypadMode),
-    
+
     /* CSI */
     CharAttr(CharAttr),
     EraseInLine(EraseInLine),
     EraseInDisplay(EraseInDisplay),
+    /// Set cursor position, zero-indexed row-column
+    CursorPosition(usize, usize),
     /* OSC */
     SetWindowTitle(String),
     SetIconName(String),
@@ -74,7 +76,7 @@ pub enum CharType {
     Normal,
     Bold,
     Faint,
-    
+
     Italicized,
     Underlined,
     Blink,
@@ -186,7 +188,7 @@ macro_rules! next_char (
 /// Parses up to the next ';' or the end of the buffer (throwing away
 /// the ';', leaving the reset present in the buffer.
 macro_rules! buf_next_int (
-    ( $me:ident ) => (
+    ( $me:ident, $typ:ty ) => (
         String::from_utf8(match $me.buf.iter().position(|c| *c == b';') {
             Some(p) => {
                 let v = $me.buf[..p].to_vec();
@@ -204,7 +206,7 @@ macro_rules! buf_next_int (
             }
         })
         .ok()
-        .map_or(None, |s| s.parse::<u8>().ok())
+        .map_or(None, |s| s.parse::<$typ>().ok())
     )
 );
 
@@ -337,7 +339,7 @@ impl<T: io::Read> Iterator for Parser<T> {
                 ParserState::CSI => match next_char!(self) {
                     b'm' => self.state = ParserState::CharAttr,
                     b'J' => {
-                        let r = match buf_next_int!(self) {
+                        let r = match buf_next_int!(self, u8) {
                             Some(1) => Some(Seq::EraseInDisplay(EraseInDisplay::Above)),
                             Some(2) => Some(Seq::EraseInDisplay(EraseInDisplay::All)),
                             _       => Some(Seq::EraseInDisplay(EraseInDisplay::Below)),
@@ -350,7 +352,7 @@ impl<T: io::Read> Iterator for Parser<T> {
                         return r;
                     },
                     b'K' => {
-                        let r = match buf_next_int!(self) {
+                        let r = match buf_next_int!(self, u8) {
                             Some(1) => Some(Seq::EraseInLine(EraseInLine::Left)),
                             Some(2) => Some(Seq::EraseInLine(EraseInLine::All)),
                             _       => Some(Seq::EraseInLine(EraseInLine::Right)),
@@ -362,6 +364,16 @@ impl<T: io::Read> Iterator for Parser<T> {
                         
                         return r;
                     },
+                    b'H' => {
+                        let row = buf_next_int!(self, usize).unwrap_or(1);
+                        let col = buf_next_int!(self, usize).unwrap_or(1);
+
+                        self.buf.truncate(0);
+
+                        self.state = ParserState::Default;
+
+                        return Some(Seq::CursorPosition(row - 1, col - 1));
+                    },
                     c if c >= 0x40 && c <= 0x7E => {
                         self.buf.push(c);
                         
@@ -371,10 +383,10 @@ impl<T: io::Read> Iterator for Parser<T> {
                 },
                 ParserState::CharAttr => {
                     let mut cpy = self.buf.clone();
-                    
+
                     cpy.push(b'm');
-                    
-                    let r = match buf_next_int!(self) {
+
+                    let r = match buf_next_int!(self, u8) {
                         Some(0)              => Some(Seq::CharAttr(CharAttr::Reset)),
                         Some(1)              => Some(Seq::CharAttr(CharAttr::Set(CharType::Bold))),
                         Some(2)              => Some(Seq::CharAttr(CharAttr::Set(CharType::Faint))),
@@ -410,11 +422,11 @@ impl<T: io::Read> Iterator for Parser<T> {
                         Some(46) | Some(106) => Some(Seq::CharAttr(CharAttr::BGColor(Color::Cyan))),
                         Some(47) | Some(107) => Some(Seq::CharAttr(CharAttr::BGColor(Color::White))),
                         Some(49)             => Some(Seq::CharAttr(CharAttr::BGColor(Color::Default))),
-                        Some(38)             => match (buf_next_int!(self), buf_next_int!(self), buf_next_int!(self), buf_next_int!(self)) {
+                        Some(38)             => match (buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8)) {
                             (Some(2), Some(r), Some(g), Some(b)) => Some(Seq::CharAttr(CharAttr::FGColor(Color::RGB(r, g, b)))),
                             _                                    => unknown_csi!(self, cpy)
                         },
-                        Some(48)             => match (buf_next_int!(self), buf_next_int!(self), buf_next_int!(self), buf_next_int!(self)) {
+                        Some(48)             => match (buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8)) {
                             (Some(2), Some(r), Some(g), Some(b)) => Some(Seq::CharAttr(CharAttr::BGColor(Color::RGB(r, g, b)))),
                             _                                    => unknown_csi!(self, cpy)
                         },
