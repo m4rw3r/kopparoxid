@@ -99,6 +99,7 @@ pub enum Color {
     Cyan,
     White,
     Default,
+    Palette(u8),
     RGB(u8, u8, u8)
 }
 
@@ -177,13 +178,13 @@ macro_rules! parse_osc (
         else {
             None
         };
-        
+
         match r {
             Some(x) => {
                 $me.state = ParserState::Default;
-                
+
                 $me.buf.truncate(0);
-                
+
                 return Some(x);
             },
             _ => {
@@ -191,11 +192,11 @@ macro_rules! parse_osc (
                     Ok(x) => println!("Unknown OSC: {}", x),
                     _     => println!("Unknown OSC bytes: {:?}", $me.buf)
                 }
-                
+
                 $me.state = ParserState::Default;
-                
+
                 $me.buf.truncate(0);
-                
+
                 continue;
             }
         };
@@ -208,7 +209,7 @@ macro_rules! next_char (
         Some(Ok(c))    => c,
         Some(Err(err)) => {
             println!("Error during parsing: {}", err);
-            
+
             return None
         },
         None           => return None
@@ -224,16 +225,16 @@ macro_rules! buf_next_int (
         String::from_utf8(match $me.buf.iter().position(|c| *c == b';') {
             Some(p) => {
                 let v = $me.buf[..p].to_vec();
-                
+
                 $me.buf = $me.buf[p+1..].to_vec();
-                
+
                 v
             },
             None => {
                 let v = $me.buf.clone();
-                
+
                 $me.buf.truncate(0);
-                
+
                 v
             }
         })
@@ -253,24 +254,24 @@ macro_rules! unknown_csi (
             Ok(x) => println!("Unknown CSI: {}", x),
             _     => println!("Unknown CSI bytes: {:?}", $me.buf)
         };
-        
+
         $me.buf.truncate(0);
-        
+
         $me.state = ParserState::Default;
-        
+
         continue;
     });
-    
+
     ( $me:ident, $buf:ident ) => ({
         match str::from_utf8(&$buf[..]) {
             Ok(x) => println!("Unknown CSI: {}", x),
             _     => println!("Unknown CSI bytes: {:?}", $buf)
         };
-        
+
         $me.buf.truncate(0);
-        
+
         $me.state = ParserState::Default;
-        
+
         continue;
     });
 );
@@ -280,7 +281,7 @@ macro_rules! unknown_csi (
 macro_rules! return_reset (
     ( $me:ident, $ret:expr ) => ({
         $me.state = ParserState::Default;
-        
+
         return Some($ret);
     })
 );
@@ -297,7 +298,7 @@ static UTF8_TRAILING: [u8; 256] = [
 
 impl<T: io::Read> Iterator for Parser<T> {
     type Item = Seq;
-    
+
     fn next(&mut self) -> Option<Seq> {
         loop {
             match self.state {
@@ -311,13 +312,13 @@ impl<T: io::Read> Iterator for Parser<T> {
                     0x0D => return Some(Seq::CarriageReturn),
                     0x0E => return Some(Seq::ShiftOut),
                     0x0F => return Some(Seq::ShiftIn),
-                    
+
                     0x1B => self.state = ParserState::ESC,
-                    
+
                     c if c > 127 => {
                         let tail = UTF8_TRAILING[c as usize];
                         let chr  = (c as u32) & (0xff >> (tail + 2));
-                        
+
                         self.state = ParserState::Unicode(chr, tail - 1)
                     },
                     c => return Some(Seq::Unicode(c as u32)),
@@ -325,7 +326,7 @@ impl<T: io::Read> Iterator for Parser<T> {
                 ParserState::Unicode(chr, 0) => match next_char!(self) {
                     c if c > 127 => {
                         self.state = ParserState::Default;
-                    
+
                         return Some(Seq::Unicode((chr << 6) + ((c as u32) & 0x3f)));
                     },
                     c => {
@@ -357,17 +358,17 @@ impl<T: io::Read> Iterator for Parser<T> {
                     b']' => self.state = ParserState::OSC, /* OSC */
                     b'^' => return_reset!(self, Seq::PrivacyMessage), /* PM */
                     b'_' => return_reset!(self, Seq::ApplicationProgramCommand), /* APC */
-                    
+
                     b'>' => return_reset!(self, Seq::SetKeypadMode(KeypadMode::Numeric)),
                     b'=' => return_reset!(self, Seq::SetKeypadMode(KeypadMode::Application)),
                     b'(' => self.state = ParserState::Charset(CharsetIndex::G0),
                     b')' => self.state = ParserState::Charset(CharsetIndex::G1),
                     b'*' => self.state = ParserState::Charset(CharsetIndex::G2),
                     b'+' => self.state = ParserState::Charset(CharsetIndex::G3),
-                    
+
                     c => {
                         print!("Unknown escape char code: {}\n", c);
-                            
+
                         self.state = ParserState::Default;
                     }
                     // Some(b" ") => match 
@@ -380,11 +381,11 @@ impl<T: io::Read> Iterator for Parser<T> {
                             Some(2) => Some(Seq::EraseInDisplay(EraseInDisplay::All)),
                             _       => Some(Seq::EraseInDisplay(EraseInDisplay::Below)),
                         };
-                        
+
                         self.buf.truncate(0);
-                        
+
                         self.state = ParserState::Default;
-                        
+
                         return r;
                     },
                     b'K' => {
@@ -393,11 +394,11 @@ impl<T: io::Read> Iterator for Parser<T> {
                             Some(2) => Some(Seq::EraseInLine(EraseInLine::All)),
                             _       => Some(Seq::EraseInLine(EraseInLine::Right)),
                         };
-                        
+
                         self.buf.truncate(0);
-                        
+
                         self.state = ParserState::Default;
-                        
+
                         return r;
                     },
                     b'H' => {
@@ -412,7 +413,9 @@ impl<T: io::Read> Iterator for Parser<T> {
                     },
                     c if c >= 0x40 && c <= 0x7E => {
                         self.buf.push(c);
-                        
+
+                        println!("Unknown char: {}", c);
+
                         unknown_csi!(self);
                     },
                     c => self.buf.push(c)
@@ -460,19 +463,23 @@ impl<T: io::Read> Iterator for Parser<T> {
                         Some(49)             => Some(Seq::CharAttr(CharAttr::BGColor(Color::Default))),
                         Some(38)             => match (buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8)) {
                             (Some(2), Some(r), Some(g), Some(b)) => Some(Seq::CharAttr(CharAttr::FGColor(Color::RGB(r, g, b)))),
+                            (Some(5), Some(p), None, None)       => Some(Seq::CharAttr(CharAttr::FGColor(Color::Palette(p)))),
                             _                                    => unknown_csi!(self, cpy)
                         },
                         Some(48)             => match (buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8)) {
                             (Some(2), Some(r), Some(g), Some(b)) => Some(Seq::CharAttr(CharAttr::BGColor(Color::RGB(r, g, b)))),
+                            (Some(5), Some(p), None, None)       => Some(Seq::CharAttr(CharAttr::BGColor(Color::Palette(p)))),
                             _                                    => unknown_csi!(self, cpy)
                         },
-                        _ => unknown_csi!(self, cpy)
+                        _ => {
+                            unknown_csi!(self, cpy);
+                        }
                     };
-                    
+
                     if self.buf.len() == 0 {
                         self.state = ParserState::Default;
                     }
-                    
+
                     return r;
                 },
                 ParserState::Charset(index) => match next_char!(self) {
@@ -502,7 +509,7 @@ impl<T: io::Read> Iterator for Parser<T> {
                     b'=' => return_reset!(self, Seq::Charset(index, Charset::Swiss)),
                     c => {
                         print!("Unknown charset code: {}\n", c);
-                            
+
                         self.state = ParserState::Default;
                     }
                 },
@@ -510,7 +517,7 @@ impl<T: io::Read> Iterator for Parser<T> {
                     0x5C if self.buf.iter().last() == Some(&0x1B) => {
                         /* Remove ESC */
                         self.buf.pop();
-                        
+
                         parse_osc!(self)
                     },
                     0x07 => parse_osc!(self),
