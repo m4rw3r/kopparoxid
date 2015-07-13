@@ -130,7 +130,7 @@ impl<'a, F> GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
     fn load(&mut self, glyph: usize) -> Result<(), GlyphError> {
         use std::borrow::Cow;
         use glium::texture;
-        
+
         if self.glyphs.contains_key(&glyph) {
             return Ok(())
         }
@@ -148,12 +148,14 @@ impl<'a, F> GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
         let bottom = cmp::max(0, (height >> 6) as i32 - top - glyph_bitmap.rows());
         let right  = cmp::max(0, (g.advance().x >> 6) as i32 - g.bitmap_left() - glyph_bitmap.width());
 
+        println!("char: {}, Padding: {:?}", glyph as u8 as char, (left, top, right, bottom));
+
         let r = self.atlas.add_with_padding(texture::RawImage2d{
             data:   Cow::Borrowed(glyph_bitmap.buffer()),
             width:  glyph_bitmap.width() as u32,
             height: glyph_bitmap.rows() as u32,
             format: texture::ClientFormat::U8
-        }, (left as u32, top as u32, right as u32, bottom as u32));
+        }, (left as u32 +1, top as u32 +1, right as u32 +1, bottom as u32 +1));
 
         self.glyphs.insert(glyph, Glyph {
             tex_area:  r,
@@ -182,10 +184,37 @@ struct Character {
     bg:    ctrl::Color,
 }
 
+fn color(c: ctrl::Color, d: [f32; 3]) -> [f32; 3] {
+    match c {
+        ctrl::Color::Black        => [0.0, 0.0, 0.0],
+        ctrl::Color::Red          => [1.0, 0.0, 0.0],
+        ctrl::Color::Green        => [0.0, 1.0, 0.0],
+        ctrl::Color::Yellow       => [1.0, 1.0, 0.0],
+        ctrl::Color::Blue         => [0.0, 0.0, 1.0],
+        ctrl::Color::Magenta      => [1.0, 0.0, 1.0],
+        ctrl::Color::Cyan         => [0.0, 1.0, 1.0],
+        ctrl::Color::White        => [1.0, 1.0, 1.0],
+        ctrl::Color::Default      => d,
+        ctrl::Color::RGB(r, g, b) => [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0],
+    }
+}
+
+impl Character {
+    fn get_fg(&self) -> [f32; 3] {
+        color(self.fg, [1.0, 1.0, 1.0])
+    }
+    
+    fn get_bg(&self) -> [f32; 3] {
+        color(self.bg, [0.0, 0.0, 0.0])
+    }
+}
+
 struct Term<'a, F> where F: 'a + glium::backend::Facade {
     glyphs: GlyphMap<'a, F>,
     size:   (usize, usize),
     pos:    (usize, usize),
+    cur_fg: ctrl::Color,
+    cur_bg: ctrl::Color,
     colors: collections::HashMap<ctrl::Color, (u8, u8, u8)>,
     data:   Vec<Vec<Character>>,
 }
@@ -202,6 +231,8 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
             glyphs: glyph_map,
             size:   size,
             pos:    (0, 0),
+            cur_fg: ctrl::Color::Default,
+            cur_bg: ctrl::Color::Default,
             colors: collections::HashMap::new(),
             data:   data,
         }
@@ -228,7 +259,25 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
         self.size = size;
     }
 
+    fn set(&mut self, c: Character) {
+        self.data[self.pos.0][self.pos.1] = c;
+    }
+
+    fn set_char(&mut self, c: usize) {
+        let ch = Character {
+            glyph: c,
+            fg:    self.cur_fg,
+            bg:    self.cur_bg,
+        };
+
+        self.set(ch)
+    }
+
     fn put(&mut self, c: Character) {
+        self.data[self.pos.0][self.pos.1] = c;
+
+        self.pos.1 = self.pos.1 + 1;
+
         if self.pos.1 >= self.size.1  {
             self.pos.0 = self.pos.0 + 1;
             self.pos.1 = 0;
@@ -245,14 +294,45 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
 
             self.pos.0 = self.size.0 - 1;
         }
-        
-        println!("idx: {:?}", self.pos);
+    }
 
-        self.data[self.pos.0][self.pos.1] = c;
+    fn put_char(&mut self, c: usize) {
+        let ch = Character {
+            glyph: c,
+            fg:    self.cur_fg,
+            bg:    self.cur_bg,
+        };
 
-        self.pos.1 = self.pos.1 + 1;
+        self.put(ch)
+    }
+
+    fn set_pos_diff(&mut self, (lines, cols): (i32, i32)) {
+        let mut l = (self.pos.0 as i32 + lines) % self.size.0 as i32;
+        let mut c = (self.pos.1 as i32 + cols) % self.size.1 as i32;
+
+        if l < 0 {
+            l = self.size.0 as i32 - l;
+        }
+
+        if c < 0 {
+            c = self.size.0 as i32 - c;
+        }
+
+        self.pos = (l as usize, c as usize)
     }
     
+    fn set_pos_col(&mut self, col: usize) {
+        self.pos = (self.pos.0, col % self.size.1)
+    }
+
+    fn set_fg(&mut self, fg: ctrl::Color) {
+        self.cur_fg = fg;
+    }
+
+    fn set_bg(&mut self, bg: ctrl::Color) {
+        self.cur_bg = bg;
+    }
+
     fn texture(&self) -> &glium::Texture2d {
         self.glyphs.texture()
     }
@@ -277,18 +357,22 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
 
         let glyph_map = &mut self.glyphs;
 
-        for vs in self.data.iter().enumerate().flat_map(|(i, r)| r.iter().enumerate().filter(|&(_, c)| c.glyph != 0).filter_map(|(j, c)| glyph_map.get(c.glyph).map(|l| l.vertices((((j as i32) - h_offset) as f32 / w, (-(i as i32 + 1) + v_offset) as f32 / h), (1.0 / w, 1.0 / h), tsize, [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]))).collect::<Vec<[TexturedVertex; 6]>>()) {
+        for vs in self.data.iter().enumerate()
+            .flat_map(|(i, r)|
+                      r.iter().enumerate()
+                          .filter(|&(_, c)| c.glyph != 0)
+                          .filter_map(|(j, c)|
+                                      glyph_map.get(c.glyph)
+                                      .map(|l|
+                                           l.vertices((((j as i32) - h_offset) as f32 / w, (-(i as i32 + 1) + v_offset) as f32 / h), (1.0 / w, 1.0 / h), tsize, c.get_fg(), c.get_bg()))).collect::<Vec<[TexturedVertex; 6]>>()) {
             for v in vs.iter() {
                 d.push(*v);
             }
         }
-        
+
         d
     }
 }
-
-const WIDTH: u32 = 18;
-const HEIGHT: u32 = 24;
 
 fn window(mut m: pty::Fd) {
     use clock_ticks;
@@ -301,6 +385,7 @@ fn window(mut m: pty::Fd) {
 
     m.set_noblock();
 
+    let mut out = m.clone();
     let mut p   = ctrl::new_parser(io::BufReader::with_capacity(100, m));
     let display = glutin::WindowBuilder::new()
         .with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (3, 3)))
@@ -310,17 +395,19 @@ fn window(mut m: pty::Fd) {
     let ft_lib = ft::Library::init().unwrap();
     let ft_face = ft_lib.new_face("./DejaVuSansMono/DejaVu Sans Mono for Powerline.ttf", 0).unwrap();
 
-    ft_face.set_char_size(16 * 27, 0, 72 * 27, 0).unwrap();
+    ft_face.set_char_size(50 * 27, 0, 72, 0).unwrap();
+    //ft_face.set_pixel_sizes(10, 10).unwrap();
+
+    let ft_metrics = ft_face.size_metrics().expect("Could not load size metrics from font face");
+    let c_width    = (ft_metrics.max_advance >> 6) as u32;
+    let c_height   = (ft_metrics.height >> 6) as u32;//ft_metrics.y_ppem as u32;
+
+    println!("x_ppem: {}, y_ppem: {}", ft_metrics.x_ppem, ft_metrics.y_ppem);
+    println!("width: {}, height: {}", c_width, c_height);
+    println!("ascender: {}, descender: {}", ft_metrics.ascender / 27, ft_metrics.descender / 27);
+    //return;
 
     let mut t = Term::new_with_size(GlyphMap::new(&display, ft_face), (10, 10));
-
-    for c in "Rust is really awesome here!!!".chars() {
-        t.put(Character{
-           glyph: c as usize,
-           fg:    ctrl::Color::Default,
-           bg:    ctrl::Color::Default,
-        });
-    }
 
     let indices = index::NoIndices(index::PrimitiveType::TrianglesList);
     let program = glium::Program::from_source(&display,
@@ -373,9 +460,9 @@ fn window(mut m: pty::Fd) {
     let mut previous_clock = clock_ticks::precise_time_ns();
     let mut has_data       = false;
     let mut prev_win_size  = display.get_window().and_then(|w| w.get_inner_size());
-    
+
     match prev_win_size {
-        Some((w, h)) => t.resize(((h / HEIGHT) as usize, (w / WIDTH) as usize)),
+        Some((w, h)) => t.resize(((h / c_height) as usize, (w / c_width) as usize)),
         None  => {}
     }
 
@@ -397,7 +484,13 @@ fn window(mut m: pty::Fd) {
                             ctrl::Seq::SetWindowTitle(ref title) => {
                                 display.get_window().map(|w| w.set_title(title));
                             },
-                            _                                    =>{} // println!("> {:?}", c)
+                            ctrl::Seq::Unicode(c)                           => t.put_char(c as usize),
+                            ctrl::Seq::CharAttr(ctrl::CharAttr::FGColor(c)) => t.set_fg(c),
+                            ctrl::Seq::CharAttr(ctrl::CharAttr::BGColor(c)) => t.set_bg(c),
+                            ctrl::Seq::CarriageReturn                       => t.set_pos_col(0),
+                            ctrl::Seq::Backspace                            => t.set_pos_diff((0, -1)),
+                            ctrl::Seq::LineFeed                             => t.set_pos_diff((1, 0)),
+                            _                                               => println!("> {:?}", c)
                         }
                     },
                     None    => break
@@ -408,14 +501,16 @@ fn window(mut m: pty::Fd) {
                 match i {
                     glutin::Event::Closed               => process::exit(0),
                     glutin::Event::ReceivedCharacter(c) => {
-                        t.put(Character {
-                            glyph: c as usize,
-                            fg:    ctrl::Color::Default,
-                            bg:    ctrl::Color::Default,
-                        });
+                        use std::io::Write;
+                        let mut s = String::with_capacity(c.len_utf8());
 
-                        has_data = true;
+                        s.push(c);
+                        
+                        println!("{}", c);
+
+                        out.write(s.as_ref()).unwrap();
                     },
+                    glutin::Event::MouseMoved(_) => {},
                     _                                   => println!("w {:?}", i)
                 }
             }
@@ -426,41 +521,36 @@ fn window(mut m: pty::Fd) {
             if win_size != prev_win_size {
                 prev_win_size = win_size;
                 has_data      = true;
-                
-                println!("Resize: {:?}", prev_win_size);
 
                 match prev_win_size {
                     Some((w, h)) => {
-                        println!("Asked for: {:?}", ((h / HEIGHT) as usize, (w / WIDTH) as usize));
-                        t.resize(((h / HEIGHT) as usize, (w / WIDTH) as usize));
+                        t.resize(((h / c_height) as usize, (w / c_width) as usize));
                     },
                     None  => {}
                 }
-                
-                println!("Term: {:?}", t.size);
             }
 
-            let vertex_buffer = glium::VertexBuffer::new(&display, t.vertices());
-            let uniforms = uniform! {
-                matrix: [
-                    [ 1.0, 0.0, 0.0, 0.0 ],
-                    [ 0.0, 1.0, 0.0, 0.0 ],
-                    [ 0.0, 0.0, 1.0, 0.0 ],
-                    [ 0.0, 0.0, 0.0, 1.0 ],
-                ],
-                tex: t.texture(),
-            };
-
             if has_data {
+                let vertex_buffer = glium::VertexBuffer::new(&display, t.vertices());
+                let uniforms = uniform! {
+                    matrix: [
+                        [ 1.0, 0.0, 0.0, 0.0 ],
+                        [ 0.0, 1.0, 0.0, 0.0 ],
+                        [ 0.0, 0.0, 1.0, 0.0 ],
+                        [ 0.0, 0.0, 0.0, 1.0 ],
+                    ],
+                    tex: t.texture(),
+                };
+
                 let mut target = display.draw();
                 target.clear_color(1.0, 1.0, 1.0, 1.0);
                 target.draw(&vertex_buffer, &indices, &program, &uniforms, &params).unwrap();
                 target.finish().unwrap();
             }
-            
+
             has_data = false;
         }
-        
+
         thread::sleep_ms(((FIXED_TIME_STAMP - accumulator) / 1000000) as u32);
     }
 }
