@@ -32,7 +32,6 @@ impl<'a, F> Atlas<'a, F> where F: 'a + glium::backend::Facade {
     }
 
     pub fn add_with_padding<P: glium::texture::PixelValue + Clone>(&mut self, raw: glium::texture::RawImage2d<P>, padding: (u32, u32, u32, u32)) -> glium::Rect {
-        println!("Padding: {:?}", padding);
         let req_size     = (padding.0 + raw.width + padding.2, padding.1 + raw.height + padding.3);
         let cur_size     = (self.texture.get_width(), self.texture.get_height().unwrap_or(1));
         let mut new_size = cur_size;

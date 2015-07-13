@@ -148,8 +148,6 @@ impl<'a, F> GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
         let bottom = cmp::max(0, (height >> 6) as i32 - top - glyph_bitmap.rows());
         let right  = cmp::max(0, (g.advance().x >> 6) as i32 - g.bitmap_left() - glyph_bitmap.width());
 
-        println!("char: {}, Padding: {:?}", glyph as u8 as char, (left, top, right, bottom));
-
         let r = self.atlas.add_with_padding(texture::RawImage2d{
             data:   Cow::Borrowed(glyph_bitmap.buffer()),
             width:  glyph_bitmap.width() as u32,
@@ -195,6 +193,8 @@ fn color(c: ctrl::Color, d: [f32; 3]) -> [f32; 3] {
         ctrl::Color::Cyan         => [0.0, 1.0, 1.0],
         ctrl::Color::White        => [1.0, 1.0, 1.0],
         ctrl::Color::Default      => d,
+        /* FIXME: Use color palette */
+        ctrl::Color::Palette(_)   => d,
         ctrl::Color::RGB(r, g, b) => [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0],
     }
 }
@@ -203,7 +203,7 @@ impl Character {
     fn get_fg(&self) -> [f32; 3] {
         color(self.fg, [1.0, 1.0, 1.0])
     }
-    
+
     fn get_bg(&self) -> [f32; 3] {
         color(self.bg, [0.0, 0.0, 0.0])
     }
@@ -320,7 +320,11 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
 
         self.pos = (l as usize, c as usize)
     }
-    
+
+    fn set_pos(&mut self, line: usize, col: usize) {
+        self.pos = (line % self.size.0, col % self.size.1)
+    }
+
     fn set_pos_col(&mut self, col: usize) {
         self.pos = (self.pos.0, col % self.size.1)
     }
@@ -331,6 +335,25 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
 
     fn set_bg(&mut self, bg: ctrl::Color) {
         self.cur_bg = bg;
+    }
+
+    fn erase_in_display_below(&mut self) {
+        let line = self.pos.0;
+
+        for r in self.data.iter_mut().skip(line) {
+            for c in r.iter_mut() {
+                c.glyph = 0;
+            }
+        }
+    }
+
+    fn erase_in_line_right(&mut self) {
+        let line = self.pos.0;
+        let col  = self.pos.1;
+
+        for c in self.data[line].iter_mut().skip(col) {
+            c.glyph = 0;
+        }
     }
 
     fn texture(&self) -> &glium::Texture2d {
@@ -345,7 +368,7 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
                 }
             }
         }
-            
+
         let h = self.size.0 as f32 / 2.0;
         let w = self.size.1 as f32 / 2.0;
         let h_offset: i32 = (self.size.1 / 2) as i32;
@@ -395,12 +418,11 @@ fn window(mut m: pty::Fd) {
     let ft_lib = ft::Library::init().unwrap();
     let ft_face = ft_lib.new_face("./DejaVuSansMono/DejaVu Sans Mono for Powerline.ttf", 0).unwrap();
 
-    ft_face.set_char_size(50 * 27, 0, 72, 0).unwrap();
-    //ft_face.set_pixel_sizes(10, 10).unwrap();
+    ft_face.set_char_size(40 * 27, 0, 72, 0).unwrap();
 
     let ft_metrics = ft_face.size_metrics().expect("Could not load size metrics from font face");
-    let c_width    = (ft_metrics.max_advance >> 6) as u32;
-    let c_height   = (ft_metrics.height >> 6) as u32;//ft_metrics.y_ppem as u32;
+    let c_width    = (ft_metrics.max_advance >> 6) as u32 + 1;
+    let c_height   = (ft_metrics.height >> 6) as u32 + 1;//ft_metrics.y_ppem as u32;
 
     println!("x_ppem: {}, y_ppem: {}", ft_metrics.x_ppem, ft_metrics.y_ppem);
     println!("width: {}, height: {}", c_width, c_height);
@@ -434,11 +456,11 @@ fn window(mut m: pty::Fd) {
         "   #version 410
 
             uniform sampler2D texture_diffuse;
-            
+
             in vec3 pass_fg_rgb;
             in vec3 pass_bg_rgb;
             in vec2 pass_st;
-            
+
             out vec4 out_color;
 
             void main() {
@@ -487,6 +509,13 @@ fn window(mut m: pty::Fd) {
                             ctrl::Seq::Unicode(c)                           => t.put_char(c as usize),
                             ctrl::Seq::CharAttr(ctrl::CharAttr::FGColor(c)) => t.set_fg(c),
                             ctrl::Seq::CharAttr(ctrl::CharAttr::BGColor(c)) => t.set_bg(c),
+                            ctrl::Seq::CharAttr(ctrl::CharAttr::Reset)      => {
+                                t.set_fg(ctrl::Color::Default);
+                                t.set_bg(ctrl::Color::Default);
+                            },
+                            ctrl::Seq::EraseInDisplay(ctrl::EraseInDisplay::Below) => t.erase_in_display_below(),
+                            ctrl::Seq::EraseInLine(ctrl::EraseInLine::Right) => t.erase_in_line_right(),
+                            ctrl::Seq::CursorPosition(row, col) => t.set_pos(row, col),
                             ctrl::Seq::CarriageReturn                       => t.set_pos_col(0),
                             ctrl::Seq::Backspace                            => t.set_pos_diff((0, -1)),
                             ctrl::Seq::LineFeed                             => t.set_pos_diff((1, 0)),
@@ -505,8 +534,6 @@ fn window(mut m: pty::Fd) {
                         let mut s = String::with_capacity(c.len_utf8());
 
                         s.push(c);
-                        
-                        println!("{}", c);
 
                         out.write(s.as_ref()).unwrap();
                     },
