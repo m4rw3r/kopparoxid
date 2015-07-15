@@ -257,6 +257,7 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
         self.data.extend((len..rows).map(|_| (0..cols).map(|_| Character::default()).collect()));
 
         self.size = size;
+        self.pos  = (cmp::min(self.size.0 - 1, self.pos.0), cmp::min(self.size.1 - 1, self.pos.1));
 
         println!("TERMSIZE: {:?}", self.size);
     }
