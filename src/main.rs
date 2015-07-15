@@ -257,6 +257,8 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
         self.data.extend((len..rows).map(|_| (0..cols).map(|_| Character::default()).collect()));
 
         self.size = size;
+
+        println!("TERMSIZE: {:?}", self.size);
     }
 
     fn set(&mut self, c: Character) {
@@ -488,7 +490,7 @@ fn window(mut m: pty::Fd) {
 
             loop {
                 match p.next() {
-                    Some(c) => {
+                    Some(Ok(c)) => {
                         has_data = true;
 
                         match c {
@@ -503,14 +505,18 @@ fn window(mut m: pty::Fd) {
                                 t.set_bg(ctrl::Color::Default);
                             },
                             ctrl::Seq::EraseInDisplay(ctrl::EraseInDisplay::Below) => t.erase_in_display_below(),
-                            ctrl::Seq::EraseInLine(ctrl::EraseInLine::Right) => t.erase_in_line_right(),
-                            ctrl::Seq::CursorPosition(row, col) => t.set_pos(row, col),
-                            ctrl::Seq::CarriageReturn                       => t.set_pos_col(0),
-                            ctrl::Seq::Backspace                            => t.set_pos_diff((0, -1)),
-                            ctrl::Seq::LineFeed                             => t.set_pos_diff((1, 0)),
-                            _                                               => println!("> {:?}", c)
+                            ctrl::Seq::EraseInLine(ctrl::EraseInLine::Right)       => t.erase_in_line_right(),
+                            ctrl::Seq::CursorPosition(row, col)                    => t.set_pos(row, col),
+                            ctrl::Seq::CarriageReturn                              => t.set_pos_col(0),
+                            ctrl::Seq::Backspace                                   => t.set_pos_diff((0, -1)),
+                            ctrl::Seq::LineFeed                                    => {
+                                t.set_pos_diff((1, 0));
+                                t.set_pos_col(0)
+                            },
+                            _                                                      => println!("> {:?}", c)
                         }
                     },
+                    Some(Err(e)) => println!("{}", e),
                     None    => break
                 }
             }
@@ -527,7 +533,7 @@ fn window(mut m: pty::Fd) {
                         out.write(s.as_ref()).unwrap();
                     },
                     glutin::Event::MouseMoved(_) => {},
-                    _                                   => println!("w {:?}", i)
+                    _                                   => {} // println!("w {:?}", i)
                 }
             }
 

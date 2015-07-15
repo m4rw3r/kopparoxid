@@ -1,5 +1,7 @@
 use std::io;
 use std::str;
+use std::fmt;
+use std::result;
 
 #[derive(Debug)]
 pub enum Seq {
@@ -122,6 +124,7 @@ pub enum CharAttr {
 pub enum Charset {
     DECSpecialAndLineDrawing,
     DECSupplementary,
+    DECSupplementaryGraphics,
     DECTechnical,
     UnitedKingdom,
     UnitedStates,
@@ -147,7 +150,32 @@ pub enum CharsetIndex {
     G3,
 }
 
-enum ParserState {
+#[derive(Debug)]
+pub enum Error {
+    ParseError(ParserState, Vec<u8>),
+    UnknownCharset(u8, Option<u8>),
+    UnknownEscapeChar(u8),
+    UnexpectedUTF8Byte(u8),
+    IoError(io::Error),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Error::ParseError(state, ref data) => write!(f, "Unknown sequence found in state {:?}: {}", state, unsafe { String::from_utf8_unchecked(data.clone()) }),
+            Error::UnknownCharset(c, None)     => write!(f, "Unknown charset sequence: {:?}", c),
+            Error::UnknownCharset(c, Some(d))  => write!(f, "Unknown charset sequence: {:?} {:?}", c, d),
+            Error::UnknownEscapeChar(c)        => write!(f, "Unknown escape character: {:?}", c),
+            Error::UnexpectedUTF8Byte(b)       => write!(f, "Unexpected UTF8 byte: {:?}", b),
+            Error::IoError(ref err)            => err.fmt(f),
+        }
+    }
+}
+
+pub type Result = result::Result<Seq, Error>;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ParserState {
     Default,
     ESC,
     CSI,
@@ -179,27 +207,24 @@ macro_rules! parse_osc (
             None
         };
 
-        match r {
+        return match r {
             Some(x) => {
                 $me.state = ParserState::Default;
 
                 $me.buf.truncate(0);
 
-                return Some(x);
+                Some(Ok(x))
             },
             _ => {
-                match str::from_utf8(&$me.buf[..]) {
-                    Ok(x) => println!("Unknown OSC: {}", x),
-                    _     => println!("Unknown OSC bytes: {:?}", $me.buf)
-                }
+                let r = Some(Err(Error::ParseError($me.state, $me.buf.clone())));
 
                 $me.state = ParserState::Default;
 
                 $me.buf.truncate(0);
 
-                continue;
+                r
             }
-        };
+        }
     })
 );
 
@@ -208,9 +233,7 @@ macro_rules! next_char (
     ( $me:ident ) => ( match $me.src.next() {
         Some(Ok(c))    => c,
         Some(Err(err)) => {
-            println!("Error during parsing: {}", err);
-
-            return None
+            return Some(Err(Error::IoError(err)));
         },
         None           => return None
     } )
@@ -250,29 +273,23 @@ macro_rules! buf_next_int (
 /// Resets state and buffer.
 macro_rules! unknown_csi (
     ( $me:ident ) => ({
-        match str::from_utf8(&$me.buf[..]) {
-            Ok(x) => println!("Unknown CSI: {}", x),
-            _     => println!("Unknown CSI bytes: {:?}", $me.buf)
-        };
+        let r = Some(Err(Error::ParseError($me.state, $me.buf.clone())));
 
         $me.buf.truncate(0);
 
         $me.state = ParserState::Default;
 
-        continue;
+        return r;
     });
 
     ( $me:ident, $buf:ident ) => ({
-        match str::from_utf8(&$buf[..]) {
-            Ok(x) => println!("Unknown CSI: {}", x),
-            _     => println!("Unknown CSI bytes: {:?}", $buf)
-        };
+        let r = Some(Err(Error::ParseError($me.state, $buf)));
 
         $me.buf.truncate(0);
 
         $me.state = ParserState::Default;
 
-        continue;
+        return r;
     });
 );
 
@@ -282,7 +299,7 @@ macro_rules! return_reset (
     ( $me:ident, $ret:expr ) => ({
         $me.state = ParserState::Default;
 
-        return Some($ret);
+        return Some(Ok($ret));
     })
 );
 
@@ -297,21 +314,21 @@ static UTF8_TRAILING: [u8; 256] = [
     2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3,4,4,4,4,5,5,5,5];
 
 impl<T: io::Read> Iterator for Parser<T> {
-    type Item = Seq;
+    type Item = Result;
 
-    fn next(&mut self) -> Option<Seq> {
+    fn next(&mut self) -> Option<Result> {
         loop {
             match self.state {
                 ParserState::Default => match next_char!(self) {
-                    0x07 => return Some(Seq::Bell),
-                    0x08 => return Some(Seq::Backspace),
-                    0x09 => return Some(Seq::Tab),
-                    0x0A => return Some(Seq::LineFeed),
-                    0x0B => return Some(Seq::TabVertical),
-                    0x0C => return Some(Seq::FormFeed),
-                    0x0D => return Some(Seq::CarriageReturn),
-                    0x0E => return Some(Seq::ShiftOut),
-                    0x0F => return Some(Seq::ShiftIn),
+                    0x07 => return Some(Ok(Seq::Bell)),
+                    0x08 => return Some(Ok(Seq::Backspace)),
+                    0x09 => return Some(Ok(Seq::Tab)),
+                    0x0A => return Some(Ok(Seq::LineFeed)),
+                    0x0B => return Some(Ok(Seq::TabVertical)),
+                    0x0C => return Some(Ok(Seq::FormFeed)),
+                    0x0D => return Some(Ok(Seq::CarriageReturn)),
+                    0x0E => return Some(Ok(Seq::ShiftOut)),
+                    0x0F => return Some(Ok(Seq::ShiftIn)),
 
                     0x1B => self.state = ParserState::ESC,
 
@@ -321,25 +338,17 @@ impl<T: io::Read> Iterator for Parser<T> {
 
                         self.state = ParserState::Unicode(chr, tail - 1)
                     },
-                    c => return Some(Seq::Unicode(c as u32)),
+                    c => return Some(Ok(Seq::Unicode(c as u32))),
                 },
                 ParserState::Unicode(chr, 0) => match next_char!(self) {
-                    c if c > 127 => {
-                        self.state = ParserState::Default;
-
-                        return Some(Seq::Unicode((chr << 6) + ((c as u32) & 0x3f)));
-                    },
-                    c => {
-                        println!("Invalid UTF-8 sequence: {:x}", c);
-                    }
+                    c if c > 127 => return_reset!(self, Seq::Unicode((chr << 6) + ((c as u32) & 0x3f))),
+                    c => return Some(Err(Error::UnexpectedUTF8Byte(c)))
                 },
                 ParserState::Unicode(chr, i) => match next_char!(self) {
                     c if c > 127 => {
                         self.state = ParserState::Unicode((chr << 6) + ((c as u32) & 0x3f), i - 1);
                     },
-                    c => {
-                        println!("Invalid UTF-8 sequence: {:x}", c);
-                    }
+                    c => return Some(Err(Error::UnexpectedUTF8Byte(c)))
                 },
                 ParserState::ESC => match next_char!(self) {
                     b'D' => return_reset!(self, Seq::Index), /* IND */
@@ -367,9 +376,9 @@ impl<T: io::Read> Iterator for Parser<T> {
                     b'+' => self.state = ParserState::Charset(CharsetIndex::G3),
 
                     c => {
-                        print!("Unknown escape char code: {}\n", c);
-
                         self.state = ParserState::Default;
+
+                        return Some(Err(Error::UnknownEscapeChar(c)));
                     }
                     // Some(b" ") => match 
                 },
@@ -377,9 +386,9 @@ impl<T: io::Read> Iterator for Parser<T> {
                     b'm' => self.state = ParserState::CharAttr,
                     b'J' => {
                         let r = match buf_next_int!(self, u8) {
-                            Some(1) => Some(Seq::EraseInDisplay(EraseInDisplay::Above)),
-                            Some(2) => Some(Seq::EraseInDisplay(EraseInDisplay::All)),
-                            _       => Some(Seq::EraseInDisplay(EraseInDisplay::Below)),
+                            Some(1) => Some(Ok(Seq::EraseInDisplay(EraseInDisplay::Above))),
+                            Some(2) => Some(Ok(Seq::EraseInDisplay(EraseInDisplay::All))),
+                            _       => Some(Ok(Seq::EraseInDisplay(EraseInDisplay::Below))),
                         };
 
                         self.buf.truncate(0);
@@ -390,9 +399,9 @@ impl<T: io::Read> Iterator for Parser<T> {
                     },
                     b'K' => {
                         let r = match buf_next_int!(self, u8) {
-                            Some(1) => Some(Seq::EraseInLine(EraseInLine::Left)),
-                            Some(2) => Some(Seq::EraseInLine(EraseInLine::All)),
-                            _       => Some(Seq::EraseInLine(EraseInLine::Right)),
+                            Some(1) => Some(Ok(Seq::EraseInLine(EraseInLine::Left))),
+                            Some(2) => Some(Ok(Seq::EraseInLine(EraseInLine::All))),
+                            _       => Some(Ok(Seq::EraseInLine(EraseInLine::Right))),
                         };
 
                         self.buf.truncate(0);
@@ -409,66 +418,69 @@ impl<T: io::Read> Iterator for Parser<T> {
 
                         self.state = ParserState::Default;
 
-                        return Some(Seq::CursorPosition(row - 1, col - 1));
+                        return Some(Ok(Seq::CursorPosition(row - 1, col - 1)));
                     },
                     c if c >= 0x40 && c <= 0x7E => {
                         self.buf.push(c);
-
-                        println!("Unknown char: {}", c);
 
                         unknown_csi!(self);
                     },
                     c => self.buf.push(c)
                 },
                 ParserState::CharAttr => {
+                    // No parameters equals CSI 0 m
+                    if self.buf.len() == 0 {
+                        self.buf.push(b'0');
+                    }
+
                     let mut cpy = self.buf.clone();
 
                     cpy.push(b'm');
 
                     let r = match buf_next_int!(self, u8) {
-                        Some(0)              => Some(Seq::CharAttr(CharAttr::Reset)),
-                        Some(1)              => Some(Seq::CharAttr(CharAttr::Set(CharType::Bold))),
-                        Some(2)              => Some(Seq::CharAttr(CharAttr::Set(CharType::Faint))),
-                        Some(3)              => Some(Seq::CharAttr(CharAttr::Set(CharType::Italicized))),
-                        Some(4)              => Some(Seq::CharAttr(CharAttr::Set(CharType::Underlined))),
-                        Some(5)              => Some(Seq::CharAttr(CharAttr::Set(CharType::Blink))),
-                        Some(7)              => Some(Seq::CharAttr(CharAttr::Set(CharType::Inverse))),
-                        Some(8)              => Some(Seq::CharAttr(CharAttr::Set(CharType::Invisible))),
-                        Some(9)              => Some(Seq::CharAttr(CharAttr::Set(CharType::CrossedOut))),
-                        Some(21)             => Some(Seq::CharAttr(CharAttr::Set(CharType::DoublyUnderlined))),
-                        Some(22)             => Some(Seq::CharAttr(CharAttr::Set(CharType::Normal))), /* Not bold, not faint */
-                        Some(23)             => Some(Seq::CharAttr(CharAttr::Unset(CharType::Italicized))),
-                        Some(24)             => Some(Seq::CharAttr(CharAttr::Unset(CharType::Underlined))),
-                        Some(25)             => Some(Seq::CharAttr(CharAttr::Unset(CharType::Blink))),
-                        Some(27)             => Some(Seq::CharAttr(CharAttr::Unset(CharType::Inverse))),
-                        Some(28)             => Some(Seq::CharAttr(CharAttr::Unset(CharType::Invisible))),
-                        Some(29)             => Some(Seq::CharAttr(CharAttr::Unset(CharType::CrossedOut))),
-                        Some(30) | Some(90)  => Some(Seq::CharAttr(CharAttr::FGColor(Color::Black))),
-                        Some(31) | Some(91)  => Some(Seq::CharAttr(CharAttr::FGColor(Color::Red))),
-                        Some(32) | Some(92)  => Some(Seq::CharAttr(CharAttr::FGColor(Color::Green))),
-                        Some(33) | Some(93)  => Some(Seq::CharAttr(CharAttr::FGColor(Color::Yellow))),
-                        Some(34) | Some(94)  => Some(Seq::CharAttr(CharAttr::FGColor(Color::Blue))),
-                        Some(35) | Some(95)  => Some(Seq::CharAttr(CharAttr::FGColor(Color::Magenta))),
-                        Some(36) | Some(96)  => Some(Seq::CharAttr(CharAttr::FGColor(Color::Cyan))),
-                        Some(37) | Some(97)  => Some(Seq::CharAttr(CharAttr::FGColor(Color::White))),
-                        Some(39) | Some(99)  => Some(Seq::CharAttr(CharAttr::FGColor(Color::Default))),
-                        Some(40) | Some(100) => Some(Seq::CharAttr(CharAttr::BGColor(Color::Black))),
-                        Some(41) | Some(101) => Some(Seq::CharAttr(CharAttr::BGColor(Color::Red))),
-                        Some(42) | Some(102) => Some(Seq::CharAttr(CharAttr::BGColor(Color::Green))),
-                        Some(43) | Some(103) => Some(Seq::CharAttr(CharAttr::BGColor(Color::Yellow))),
-                        Some(44) | Some(104) => Some(Seq::CharAttr(CharAttr::BGColor(Color::Blue))),
-                        Some(45) | Some(105) => Some(Seq::CharAttr(CharAttr::BGColor(Color::Magenta))),
-                        Some(46) | Some(106) => Some(Seq::CharAttr(CharAttr::BGColor(Color::Cyan))),
-                        Some(47) | Some(107) => Some(Seq::CharAttr(CharAttr::BGColor(Color::White))),
-                        Some(49)             => Some(Seq::CharAttr(CharAttr::BGColor(Color::Default))),
+                        Some(0)              => Some(Ok(Seq::CharAttr(CharAttr::Reset))),
+                        Some(1)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Bold)))),
+                        Some(2)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Faint)))),
+                        Some(3)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Italicized)))),
+                        Some(4)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Underlined)))),
+                        Some(5)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Blink)))),
+                        Some(7)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Inverse)))),
+                        Some(8)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Invisible)))),
+                        Some(9)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::CrossedOut)))),
+                        Some(21)             => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::DoublyUnderlined)))),
+                        Some(22)             => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Normal)))), /* Not bold, not faint */
+                        Some(23)             => Some(Ok(Seq::CharAttr(CharAttr::Unset(CharType::Italicized)))),
+                        Some(24)             => Some(Ok(Seq::CharAttr(CharAttr::Unset(CharType::Underlined)))),
+                        Some(25)             => Some(Ok(Seq::CharAttr(CharAttr::Unset(CharType::Blink)))),
+                        Some(27)             => Some(Ok(Seq::CharAttr(CharAttr::Unset(CharType::Inverse)))),
+                        Some(28)             => Some(Ok(Seq::CharAttr(CharAttr::Unset(CharType::Invisible)))),
+                        Some(29)             => Some(Ok(Seq::CharAttr(CharAttr::Unset(CharType::CrossedOut)))),
+                        Some(30) | Some(90)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Black)))),
+                        Some(31) | Some(91)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Red)))),
+                        Some(32) | Some(92)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Green)))),
+                        Some(33) | Some(93)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Yellow)))),
+                        Some(34) | Some(94)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Blue)))),
+                        Some(35) | Some(95)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Magenta)))),
+                        Some(36) | Some(96)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Cyan)))),
+                        Some(37) | Some(97)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::White)))),
+                        Some(39) | Some(99)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Default)))),
+                        Some(40) | Some(100) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Black)))),
+                        Some(41) | Some(101) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Red)))),
+                        Some(42) | Some(102) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Green)))),
+                        Some(43) | Some(103) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Yellow)))),
+                        Some(44) | Some(104) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Blue)))),
+                        Some(45) | Some(105) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Magenta)))),
+                        Some(46) | Some(106) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Cyan)))),
+                        Some(47) | Some(107) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::White)))),
+                        Some(49)             => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Default)))),
                         Some(38)             => match (buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8)) {
-                            (Some(2), Some(r), Some(g), Some(b)) => Some(Seq::CharAttr(CharAttr::FGColor(Color::RGB(r, g, b)))),
-                            (Some(5), Some(p), None, None)       => Some(Seq::CharAttr(CharAttr::FGColor(Color::Palette(p)))),
+                            (Some(2), Some(r), Some(g), Some(b)) => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::RGB(r, g, b))))),
+                            (Some(5), Some(p), None, None)       => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Palette(p))))),
                             _                                    => unknown_csi!(self, cpy)
                         },
                         Some(48)             => match (buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8)) {
-                            (Some(2), Some(r), Some(g), Some(b)) => Some(Seq::CharAttr(CharAttr::BGColor(Color::RGB(r, g, b)))),
-                            (Some(5), Some(p), None, None)       => Some(Seq::CharAttr(CharAttr::BGColor(Color::Palette(p)))),
+                            (Some(2), Some(r), Some(g), Some(b)) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::RGB(r, g, b))))),
+                            (Some(5), Some(p), None, None)       => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Palette(p))))),
                             _                                    => unknown_csi!(self, cpy)
                         },
                         _ => {
@@ -483,9 +495,6 @@ impl<T: io::Read> Iterator for Parser<T> {
                     return r;
                 },
                 ParserState::Charset(index) => match next_char!(self) {
-                    // FIXME: Missing the following because they are 2-char combos:
-                    // % 5  -> DEC Supplementary Graphics (VT300).
-                    // % 6  -> Portuguese (VT300).
                     b'0' => return_reset!(self, Seq::Charset(index, Charset::DECSpecialAndLineDrawing)),
                     b'<' => return_reset!(self, Seq::Charset(index, Charset::DECSupplementary)),
                     b'>' => return_reset!(self, Seq::Charset(index, Charset::DECTechnical)),
@@ -507,10 +516,19 @@ impl<T: io::Read> Iterator for Parser<T> {
                     b'H' => return_reset!(self, Seq::Charset(index, Charset::Swedish)),
                     b'7' => return_reset!(self, Seq::Charset(index, Charset::Swedish)),
                     b'=' => return_reset!(self, Seq::Charset(index, Charset::Swiss)),
-                    c => {
-                        print!("Unknown charset code: {}\n", c);
+                    b'%' => match next_char!(self) {
+                        b'5' => return_reset!(self, Seq::Charset(index, Charset::DECSupplementaryGraphics)),
+                        b'6' => return_reset!(self, Seq::Charset(index, Charset::Portuguese)),
+                        c    => {
+                            self.state = ParserState::Default;
 
+                            return Some(Err(Error::UnknownCharset(b'%', Some(c))));
+                        }
+                    },
+                    c => {
                         self.state = ParserState::Default;
+
+                        return Some(Err(Error::UnknownCharset(c, None)));
                     }
                 },
                 ParserState::OSC => match next_char!(self) {
