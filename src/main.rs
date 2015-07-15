@@ -361,11 +361,8 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
             }
         }
 
-        let h = self.size.0 as f32 / 2.0;
-        let w = self.size.1 as f32 / 2.0;
-        let h_offset: i32 = (self.size.1 / 2) as i32;
-        let v_offset: i32 = (self.size.0 / 2) as i32;
-
+        let h     = self.size.0 as f32 / 2.0;
+        let w     = self.size.1 as f32 / 2.0;
         let tsize = self.glyphs.texture_size();
 
         let mut d = Vec::new();
@@ -379,7 +376,7 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
                           .filter_map(|(j, c)|
                                       glyph_map.get(c.glyph)
                                       .map(|l|
-                                           l.vertices((((j as i32) - h_offset) as f32 / w, (-(i as i32 + 1) + v_offset) as f32 / h), (1.0 / w, 1.0 / h), tsize, c.get_fg(), c.get_bg()))).collect::<Vec<[TexturedVertex; 6]>>()) {
+                                           l.vertices(((j as f32 - w) / w, (h - 1.0 - i as f32) / h), (1.0 / w, 1.0 / h), tsize, c.get_fg(), c.get_bg()))).collect::<Vec<[TexturedVertex; 6]>>()) {
             for v in vs.iter() {
                 d.push(*v);
             }
