@@ -276,24 +276,7 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
     fn put(&mut self, c: Character) {
         self.data[self.pos.0][self.pos.1] = c;
 
-        self.pos.1 = self.pos.1 + 1;
-
-        if self.pos.1 >= self.size.1  {
-            self.pos.0 = self.pos.0 + 1;
-            self.pos.1 = 0;
-        }
-
-        if self.pos.0 >= self.size.0 {
-            for i in (0..self.size.0 - 2) {
-                self.data.swap(i, i + 1);
-            }
-
-            for c in self.data[self.size.0 - 1].iter_mut() {
-                c.glyph = 0;
-            }
-
-            self.pos.0 = self.size.0 - 1;
-        }
+        self.set_pos_diff((0, 1));
     }
 
     fn put_char(&mut self, c: usize) {
@@ -307,18 +290,24 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
     }
 
     fn set_pos_diff(&mut self, (lines, cols): (i32, i32)) {
-        let mut l = (self.pos.0 as i32 + lines) % self.size.0 as i32;
-        let mut c = (self.pos.1 as i32 + cols) % self.size.1 as i32;
+        self.pos = (cmp::max(0, self.pos.0 as i32 + lines) as usize, cmp::max(0, self.pos.1 as i32 + cols) as usize);
 
-        if l < 0 {
-            l = self.size.0 as i32 - l;
+        if self.pos.1 >= self.size.1  {
+            self.pos.0 = self.pos.0 + 1;
+            self.pos.1 = 0;
         }
 
-        if c < 0 {
-            c = self.size.0 as i32 - c;
-        }
+        if self.pos.0 >= self.size.0 {
+            for i in 0..(self.size.0 - 1) {
+                self.data.swap(i, i + 1);
+            }
 
-        self.pos = (l as usize, c as usize)
+            for c in self.data[self.size.0 - 1].iter_mut() {
+                c.glyph = 0;
+            }
+
+            self.pos.0 = self.size.0 - 1;
+        }
     }
 
     fn set_pos(&mut self, line: usize, col: usize) {
