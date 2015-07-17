@@ -121,9 +121,9 @@ impl<'a, F> GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
 
     fn new_with_size(display: &'a F, ft_face: ft::Face<'a>, atlas_size: u32) -> Self {
         GlyphMap {
-            ft_face:  ft_face,
-            glyphs:   collections::BTreeMap::new(),
-            atlas:    tex::Atlas::new(display, atlas_size, atlas_size),
+            ft_face: ft_face,
+            glyphs:  collections::BTreeMap::new(),
+            atlas:   tex::Atlas::new(display, atlas_size, atlas_size),
         }
     }
 
@@ -135,7 +135,7 @@ impl<'a, F> GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
             return Ok(())
         }
 
-        try!(self.ft_face.load_char(glyph, ft::face::RENDER));
+        try!(self.ft_face.load_char(glyph, ft::face::RENDER | ft::face::TARGET_LIGHT));
 
         let g = self.ft_face.glyph();
         let glyph_bitmap = g.bitmap();
@@ -386,6 +386,9 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
     }
 }
 
+const FONT_SIZE: isize = 18;
+const DISPLAY_PPI: u32 = 72;
+
 fn window(mut m: pty::Fd) {
     use clock_ticks;
     use std::io;
@@ -407,16 +410,11 @@ fn window(mut m: pty::Fd) {
     let ft_lib = ft::Library::init().unwrap();
     let ft_face = ft_lib.new_face("./DejaVuSansMono/DejaVu Sans Mono for Powerline.ttf", 0).unwrap();
 
-    ft_face.set_char_size(40 * 27, 0, 72, 0).unwrap();
+    ft_face.set_char_size(FONT_SIZE << 6, 0, DISPLAY_PPI, 0).unwrap();
 
     let ft_metrics = ft_face.size_metrics().expect("Could not load size metrics from font face");
     let c_width    = (ft_metrics.max_advance >> 6) as u32 + 1;
-    let c_height   = (ft_metrics.height >> 6) as u32 + 1;//ft_metrics.y_ppem as u32;
-
-    println!("x_ppem: {}, y_ppem: {}", ft_metrics.x_ppem, ft_metrics.y_ppem);
-    println!("width: {}, height: {}", c_width, c_height);
-    println!("ascender: {}, descender: {}", ft_metrics.ascender / 27, ft_metrics.descender / 27);
-    //return;
+    let c_height   = (ft_metrics.height >> 6) as u32 + 1;
 
     let mut t = Term::new_with_size(GlyphMap::new(&display, ft_face), (10, 10));
 
@@ -463,19 +461,16 @@ fn window(mut m: pty::Fd) {
 
     let params = glium::DrawParameters::new(&display);
 
-    display.get_window().map(|w| w.set_title("rust_term"));
+    display.get_window().map(|w| w.set_title("RuSt Based openGL Virtual Terminal"));
 
     unsafe { display.get_window().map(|w| w.make_current()); };
 
     let mut accumulator    = 0;
     let mut previous_clock = clock_ticks::precise_time_ns();
-    let mut has_data       = false;
-    let mut prev_win_size  = display.get_window().and_then(|w| w.get_inner_size());
+    let mut has_data      = false;
+    let mut prev_bufsize  = display.get_framebuffer_dimensions();
 
-    match prev_win_size {
-        Some((w, h)) => t.resize(((h / c_height) as usize, (w / c_width) as usize)),
-        None  => {}
-    }
+    t.resize(((prev_bufsize.1 / c_height) as usize, (prev_bufsize.0 / c_width) as usize));
 
     loop {
         let now = clock_ticks::precise_time_ns();
@@ -535,19 +530,14 @@ fn window(mut m: pty::Fd) {
                 }
             }
 
-            let win_size = display.get_window().and_then(|w| w.get_inner_size());
+            let buf_size = display.get_framebuffer_dimensions();
 
             // OS X does not fire glutin::Event::Resize from poll_events(), need to check manually
-            if win_size != prev_win_size {
-                prev_win_size = win_size;
+            if buf_size != prev_bufsize {
+                prev_bufsize = buf_size;
                 has_data      = true;
 
-                match prev_win_size {
-                    Some((w, h)) => {
-                        t.resize(((h / c_height) as usize, (w / c_width) as usize));
-                    },
-                    None  => {}
-                }
+                t.resize(((prev_bufsize.1 / c_height) as usize, (prev_bufsize.0 / c_width) as usize));
             }
 
             if has_data {
@@ -566,6 +556,7 @@ fn window(mut m: pty::Fd) {
                 target.clear_color(1.0, 1.0, 1.0, 1.0);
                 target.draw(&vertex_buffer, &indices, &program, &uniforms, &params).unwrap();
                 target.finish().unwrap();
+                println!("{:?}", buf_size);
             }
 
             has_data = false;
