@@ -182,7 +182,7 @@ struct Character {
     bg:    ctrl::Color,
 }
 
-fn color(c: ctrl::Color, d: [f32; 3]) -> [f32; 3] {
+fn color(c: ctrl::Color, default: [f32; 3]) -> [f32; 3] {
     match c {
         ctrl::Color::Black        => [0.0, 0.0, 0.0],
         ctrl::Color::Red          => [1.0, 0.0, 0.0],
@@ -192,9 +192,9 @@ fn color(c: ctrl::Color, d: [f32; 3]) -> [f32; 3] {
         ctrl::Color::Magenta      => [1.0, 0.0, 1.0],
         ctrl::Color::Cyan         => [0.0, 1.0, 1.0],
         ctrl::Color::White        => [1.0, 1.0, 1.0],
-        ctrl::Color::Default      => d,
+        ctrl::Color::Default      => default,
         /* FIXME: Use color palette */
-        ctrl::Color::Palette(_)   => d,
+        ctrl::Color::Palette(_)   => default,
         ctrl::Color::RGB(r, g, b) => [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0],
     }
 }
@@ -211,7 +211,9 @@ impl Character {
 
 struct Term<'a, F> where F: 'a + glium::backend::Facade {
     glyphs: GlyphMap<'a, F>,
+    /// Terminal size, (columns, rows)
     size:   (usize, usize),
+    /// Cursor position (column, row)
     pos:    (usize, usize),
     cur_fg: ctrl::Color,
     cur_bg: ctrl::Color,
@@ -225,7 +227,7 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
     }
 
     fn new_with_size(glyph_map: GlyphMap<'a, F>, size: (usize, usize)) -> Self {
-        let data: Vec<Vec<Character>> = (0..size.0).map(|_| (0..size.1).map(|_| Character::default()).collect()).collect();
+        let data: Vec<Vec<Character>> = (0..size.1).map(|_| (0..size.0).map(|_| Character::default()).collect()).collect();
 
         Term {
             glyphs: glyph_map,
@@ -239,8 +241,8 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
     }
 
     fn resize(&mut self, size: (usize, usize)) {
-        let rows = size.0;
-        let cols = size.1;
+        let cols = size.0;
+        let rows = size.1;
 
         self.data.truncate(rows);
 
@@ -259,11 +261,11 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
         self.size = size;
         self.pos  = (cmp::min(self.size.0 - 1, self.pos.0), cmp::min(self.size.1 - 1, self.pos.1));
 
-        println!("TERMSIZE: {:?}", self.size);
+        println!("TERMSIZE: width: {}, height: {}", self.size.0, self.size.1);
     }
 
     fn set(&mut self, c: Character) {
-        self.data[self.pos.0][self.pos.1] = c;
+        self.data[self.pos.1][self.pos.0] = c;
     }
 
     fn set_char(&mut self, c: usize) {
@@ -277,9 +279,9 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
     }
 
     fn put(&mut self, c: Character) {
-        self.data[self.pos.0][self.pos.1] = c;
+        self.data[self.pos.1][self.pos.0] = c;
 
-        self.set_pos_diff((0, 1));
+        self.set_pos_diff((1, 0));
     }
 
     fn put_char(&mut self, c: usize) {
@@ -292,33 +294,33 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
         self.put(ch)
     }
 
-    fn set_pos_diff(&mut self, (lines, cols): (i32, i32)) {
-        self.pos = (cmp::max(0, self.pos.0 as i32 + lines) as usize, cmp::max(0, self.pos.1 as i32 + cols) as usize);
+    fn set_pos_diff(&mut self, (cols, lines): (i32, i32)) {
+        self.pos = (cmp::max(0, self.pos.0 as i32 + cols) as usize, cmp::max(0, self.pos.1 as i32 + lines) as usize);
 
-        if self.pos.1 >= self.size.1  {
-            self.pos.0 = self.pos.0 + 1;
-            self.pos.1 = 0;
+        if self.pos.0 >= self.size.0  {
+            self.pos.1 = self.pos.1 + 1;
+            self.pos.0 = 0;
         }
 
-        if self.pos.0 >= self.size.0 {
-            for i in 0..(self.size.0 - 1) {
+        if self.pos.1 >= self.size.1 {
+            for i in 0..(self.size.1 - 1) {
                 self.data.swap(i, i + 1);
             }
 
-            for c in self.data[self.size.0 - 1].iter_mut() {
+            for c in self.data[self.size.1 - 1].iter_mut() {
                 c.glyph = 0;
             }
 
-            self.pos.0 = self.size.0 - 1;
+            self.pos.1 = self.size.1 - 1;
         }
     }
 
-    fn set_pos(&mut self, line: usize, col: usize) {
-        self.pos = (line % self.size.0, col % self.size.1)
+    fn set_pos(&mut self, col: usize, line: usize) {
+        self.pos = (cmp::min(col, self.size.0), cmp::min(line, self.size.1))
     }
 
     fn set_pos_col(&mut self, col: usize) {
-        self.pos = (self.pos.0, col % self.size.1)
+        self.pos = (cmp::min(col, self.size.0), self.pos.1)
     }
 
     fn set_fg(&mut self, fg: ctrl::Color) {
@@ -330,7 +332,7 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
     }
 
     fn erase_in_display_below(&mut self) {
-        let line = self.pos.0;
+        let line = self.pos.1;
 
         for r in self.data.iter_mut().skip(line) {
             for c in r.iter_mut() {
@@ -340,8 +342,8 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
     }
 
     fn erase_in_line_right(&mut self) {
-        let line = self.pos.0;
-        let col  = self.pos.1;
+        let line = self.pos.1;
+        let col  = self.pos.0;
 
         for c in self.data[line].iter_mut().skip(col) {
             c.glyph = 0;
@@ -361,8 +363,8 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
             }
         }
 
-        let h     = self.size.0 as f32 / 2.0;
-        let w     = self.size.1 as f32 / 2.0;
+        let w     = self.size.0 as f32 / 2.0;
+        let h     = self.size.1 as f32 / 2.0;
         let tsize = self.glyphs.texture_size();
 
         let mut d = Vec::new();
@@ -470,7 +472,7 @@ fn window(mut m: pty::Fd) {
     let mut has_data      = false;
     let mut prev_bufsize  = display.get_framebuffer_dimensions();
 
-    t.resize(((prev_bufsize.1 / c_height) as usize, (prev_bufsize.0 / c_width) as usize));
+    t.resize(((prev_bufsize.0 / c_width) as usize, (prev_bufsize.1 / c_height) as usize));
 
     loop {
         let now = clock_ticks::precise_time_ns();
@@ -499,11 +501,11 @@ fn window(mut m: pty::Fd) {
                             },
                             ctrl::Seq::EraseInDisplay(ctrl::EraseInDisplay::Below) => t.erase_in_display_below(),
                             ctrl::Seq::EraseInLine(ctrl::EraseInLine::Right)       => t.erase_in_line_right(),
-                            ctrl::Seq::CursorPosition(row, col)                    => t.set_pos(row, col),
+                            ctrl::Seq::CursorPosition(row, col)                    => t.set_pos(col, row),
                             ctrl::Seq::CarriageReturn                              => t.set_pos_col(0),
-                            ctrl::Seq::Backspace                                   => t.set_pos_diff((0, -1)),
+                            ctrl::Seq::Backspace                                   => t.set_pos_diff((-1, 0)),
                             ctrl::Seq::LineFeed                                    => {
-                                t.set_pos_diff((1, 0));
+                                t.set_pos_diff((0, 1));
                                 t.set_pos_col(0)
                             },
                             _                                                      => println!("> {:?}", c)
@@ -537,7 +539,7 @@ fn window(mut m: pty::Fd) {
                 prev_bufsize = buf_size;
                 has_data      = true;
 
-                t.resize(((prev_bufsize.1 / c_height) as usize, (prev_bufsize.0 / c_width) as usize));
+                t.resize(((prev_bufsize.0 / c_width) as usize, ((prev_bufsize.1 / c_height) as usize)));
             }
 
             if has_data {
