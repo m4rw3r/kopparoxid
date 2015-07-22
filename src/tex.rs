@@ -1,5 +1,9 @@
 use glium;
 use std::cmp;
+use std::fmt;
+use std::collections;
+use ctrl;
+use ft;
 
 use glium::Surface;
 
@@ -96,5 +100,136 @@ impl<'a, F> Atlas<'a, F> where F: 'a + glium::backend::Facade {
 
     pub fn texture_size(&self) -> (u32, u32) {
         (self.texture.get_width(), self.texture.get_height().unwrap_or(1))
+    }
+}
+
+#[derive(Debug)]
+pub enum GlyphError {
+    FtError(ft::Error),
+    MissingGlyphMetrics(usize)
+}
+
+impl From<ft::Error> for GlyphError {
+    fn from(err: ft::Error) -> GlyphError {
+        GlyphError::FtError(err)
+    }
+}
+
+impl fmt::Display for GlyphError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            GlyphError::FtError(err) => err.fmt(f),
+            GlyphError::MissingGlyphMetrics(glyph) => write!(f, "glyph {} is missing metrics", glyph)
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
+    ft_face:  ft::Face<'a>,
+    glyphs:   collections::BTreeMap<usize, Glyph>,
+    atlas:    Atlas<'a, F>
+}
+
+impl<'a, F> GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
+    pub fn new(display: &'a F, ft_face: ft::Face<'a>) -> Self {
+        GlyphMap::new_with_size(display, ft_face, 1000)
+    }
+
+    pub fn new_with_size(display: &'a F, ft_face: ft::Face<'a>, atlas_size: u32) -> Self {
+        GlyphMap {
+            ft_face: ft_face,
+            glyphs:  collections::BTreeMap::new(),
+            atlas:   Atlas::new(display, atlas_size, atlas_size),
+        }
+    }
+
+    pub fn load(&mut self, glyph: usize) -> Result<(), GlyphError> {
+        use std::borrow::Cow;
+        use glium::texture;
+
+        if self.glyphs.contains_key(&glyph) {
+            return Ok(())
+        }
+
+        try!(self.ft_face.load_char(glyph, ft::face::RENDER | ft::face::TARGET_LIGHT));
+
+        let g = self.ft_face.glyph();
+        let glyph_bitmap = g.bitmap();
+
+        let height   = try!(self.ft_face.size_metrics().ok_or(GlyphError::MissingGlyphMetrics(glyph))).height;
+        let ascender = try!(self.ft_face.size_metrics().ok_or(GlyphError::MissingGlyphMetrics(glyph))).ascender;
+
+        let left   = cmp::max(0, g.bitmap_left());
+        let top    = cmp::max(0, (ascender >> 6) as i32 - g.bitmap_top());
+        let bottom = cmp::max(0, (height >> 6) as i32 - top - glyph_bitmap.rows());
+        let right  = cmp::max(0, (g.advance().x >> 6) as i32 - g.bitmap_left() - glyph_bitmap.width());
+
+        let r = self.atlas.add_with_padding(texture::RawImage2d{
+            data:   Cow::Borrowed(glyph_bitmap.buffer()),
+            width:  glyph_bitmap.width() as u32,
+            height: glyph_bitmap.rows() as u32,
+            format: texture::ClientFormat::U8
+        }, (left as u32 +1, top as u32 +1, right as u32 +1, bottom as u32 +1));
+
+        self.glyphs.insert(glyph, Glyph {
+            tex_area:  r,
+        });
+
+        Ok(())
+    }
+
+    pub fn get(&self, glyph: usize) -> Option<Glyph> {
+        self.glyphs.get(&glyph).map(|g| *g)
+    }
+
+    pub fn texture(&self) -> &glium::Texture2d {
+        self.atlas.texture()
+    }
+
+    pub fn texture_size(&self) -> (u32, u32) {
+        self.atlas.texture_size()
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct TexturedVertex {
+    xy:     [f32; 2],
+    fg_rgb: [f32; 3],
+    bg_rgb: [f32; 3],
+    /* Texture coordinates: */
+    st:     [f32; 2],
+}
+
+implement_vertex!(TexturedVertex, xy, fg_rgb, bg_rgb, st);
+
+#[derive(Copy, Clone, Debug)]
+struct Glyph {
+    tex_area:  glium::Rect,
+}
+
+impl Glyph {
+    pub fn vertices(&self, p: (f32, f32), s: (f32, f32), tex_size: (u32, u32), fg: [f32; 3], bg: [f32; 3]) -> [TexturedVertex; 6] {
+        // vertex positions
+        let l =  p.0        as f32;
+        let r = (p.0 + s.0) as f32;
+        let b =  p.1        as f32;
+        let t = (p.1 + s.1) as f32;
+
+        // texture positions
+        let tl = (self.tex_area.left)                          as f32 / tex_size.0 as f32;
+        let tr = (self.tex_area.left + self.tex_area.width)    as f32 / tex_size.0 as f32;
+        let tb = (self.tex_area.bottom)                        as f32 / tex_size.1 as f32;
+        let tt = (self.tex_area.bottom + self.tex_area.height) as f32 / tex_size.1 as f32;
+
+        [
+            TexturedVertex { xy: [l, b], fg_rgb: fg, bg_rgb: bg, st: [tl, tt] },
+            TexturedVertex { xy: [l, t], fg_rgb: fg, bg_rgb: bg, st: [tl, tb] },
+            TexturedVertex { xy: [r, t], fg_rgb: fg, bg_rgb: bg, st: [tr, tb] },
+
+            TexturedVertex { xy: [r, t], fg_rgb: fg, bg_rgb: bg, st: [tr, tb] },
+            TexturedVertex { xy: [r, b], fg_rgb: fg, bg_rgb: bg, st: [tr, tt] },
+            TexturedVertex { xy: [l, b], fg_rgb: fg, bg_rgb: bg, st: [tl, tt] },
+        ]
     }
 }
