@@ -180,10 +180,16 @@ impl<'a, F> GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
 
     /// Retrieves a specific glyph if it exists.
     pub fn get<'b>(&'b self, glyph: usize) -> Option<Glyph<'b>> {
-        self.glyphs.get(&glyph).map(|g| Glyph {
-            texture_size: self.atlas.texture_size(),
-            tex_area:     *g,
-            phantom:      PhantomData,
+        self.glyphs.get(&glyph).map(|g| {
+            let (width, height) = self.atlas.texture_size();
+
+            Glyph {
+                left:    (g.left)              as f32 / width  as f32,
+                right:   (g.left + g.width)    as f32 / width  as f32,
+                bottom:  (g.bottom)            as f32 / height as f32,
+                top:     (g.bottom + g.height) as f32 / height as f32,
+                phantom: PhantomData,
+            }
         })
     }
 
@@ -206,41 +212,34 @@ implement_vertex!(TexturedVertex, xy, fg_rgb, bg_rgb, st);
 
 #[derive(Copy, Clone, Debug)]
 pub struct Glyph<'a> {
-    /// The size of the texture
-    /// 
-    /// This requires the PhantomData with immutable reference to ensure that the texture
-    /// is not modified while this glyph instance exists
-    texture_size: (u32, u32),
-    /// Area in the texture where the glyph resides
-    tex_area:     glium::Rect,
-    /// guard to prevent resizing of the texture whose size we have stored
-    phantom:      PhantomData<&'a usize>,
+    /// Distance from left side of texture to left side of glyph area. [0-1]
+    left:    f32,
+    /// Distance from left side of texture to right side of glyph area. [0-1]
+    right:   f32,
+    /// Distance from bottom side of texture to bottom side of glyph area. [0-1]
+    bottom:  f32,
+    /// Distance from bottom side of texture to top side of glyph area. [0-1]
+    top:     f32,
+    /// Guard to prevent resizing of the texture which these fractional values point at
+    phantom: PhantomData<&'a usize>,
 }
 
 impl<'a> Glyph<'a> {
     pub fn vertices(&self, p: (f32, f32), s: (f32, f32), fg: [f32; 3], bg: [f32; 3]) -> [TexturedVertex; 6] {
-        let (width, height) = self.texture_size;
-
         // vertex positions
         let l =  p.0        as f32;
         let r = (p.0 + s.0) as f32;
         let b =  p.1        as f32;
         let t = (p.1 + s.1) as f32;
 
-        // texture positions
-        let tl = (self.tex_area.left)                          as f32 / width  as f32;
-        let tr = (self.tex_area.left + self.tex_area.width)    as f32 / width  as f32;
-        let tb = (self.tex_area.bottom)                        as f32 / height as f32;
-        let tt = (self.tex_area.bottom + self.tex_area.height) as f32 / height as f32;
-
         [
-            TexturedVertex { xy: [l, b], fg_rgb: fg, bg_rgb: bg, st: [tl, tt] },
-            TexturedVertex { xy: [l, t], fg_rgb: fg, bg_rgb: bg, st: [tl, tb] },
-            TexturedVertex { xy: [r, t], fg_rgb: fg, bg_rgb: bg, st: [tr, tb] },
+            TexturedVertex { xy: [l, b], fg_rgb: fg, bg_rgb: bg, st: [self.left,  self.top   ] },
+            TexturedVertex { xy: [l, t], fg_rgb: fg, bg_rgb: bg, st: [self.left,  self.bottom] },
+            TexturedVertex { xy: [r, t], fg_rgb: fg, bg_rgb: bg, st: [self.right, self.bottom] },
 
-            TexturedVertex { xy: [r, t], fg_rgb: fg, bg_rgb: bg, st: [tr, tb] },
-            TexturedVertex { xy: [r, b], fg_rgb: fg, bg_rgb: bg, st: [tr, tt] },
-            TexturedVertex { xy: [l, b], fg_rgb: fg, bg_rgb: bg, st: [tl, tt] },
+            TexturedVertex { xy: [r, t], fg_rgb: fg, bg_rgb: bg, st: [self.right, self.bottom] },
+            TexturedVertex { xy: [r, b], fg_rgb: fg, bg_rgb: bg, st: [self.right, self.top   ] },
+            TexturedVertex { xy: [l, b], fg_rgb: fg, bg_rgb: bg, st: [self.left,  self.top   ] },
         ]
     }
 }
