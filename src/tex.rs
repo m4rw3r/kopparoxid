@@ -2,6 +2,7 @@ use glium;
 use std::cmp;
 use std::fmt;
 use std::collections;
+use std::marker::PhantomData;
 use ctrl;
 use ft;
 
@@ -127,7 +128,7 @@ impl fmt::Display for GlyphError {
 #[derive(Debug)]
 pub struct GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
     ft_face:  ft::Face<'a>,
-    glyphs:   collections::BTreeMap<usize, Glyph>,
+    glyphs:   collections::BTreeMap<usize, glium::Rect>,
     atlas:    Atlas<'a, F>
 }
 
@@ -172,44 +173,54 @@ impl<'a, F> GlyphMap<'a, F> where F: 'a + glium::backend::Facade {
             format: texture::ClientFormat::U8
         }, (left as u32 +1, top as u32 +1, right as u32 +1, bottom as u32 +1));
 
-        self.glyphs.insert(glyph, Glyph {
-            tex_area:  r,
-        });
+        self.glyphs.insert(glyph, r);
 
         Ok(())
     }
 
-    pub fn get(&self, glyph: usize) -> Option<Glyph> {
-        self.glyphs.get(&glyph).map(|g| *g)
+    /// Retrieves a specific glyph if it exists.
+    pub fn get<'b>(&'b self, glyph: usize) -> Option<Glyph<'b>> {
+        self.glyphs.get(&glyph).map(|g| Glyph {
+            texture_size: self.atlas.texture_size(),
+            tex_area:     *g,
+            phantom:      PhantomData,
+        })
     }
 
     pub fn texture(&self) -> &glium::Texture2d {
         self.atlas.texture()
     }
-
-    pub fn texture_size(&self) -> (u32, u32) {
-        self.atlas.texture_size()
-    }
 }
 
 #[derive(Copy, Clone, Debug)]
 pub struct TexturedVertex {
+    /// Vertex coordinates [left, bottom]
     xy:     [f32; 2],
     fg_rgb: [f32; 3],
     bg_rgb: [f32; 3],
-    /* Texture coordinates: */
+    /// Texture coordinates [left, bottom]
     st:     [f32; 2],
 }
 
 implement_vertex!(TexturedVertex, xy, fg_rgb, bg_rgb, st);
 
 #[derive(Copy, Clone, Debug)]
-struct Glyph {
-    tex_area:  glium::Rect,
+pub struct Glyph<'a> {
+    /// The size of the texture
+    /// 
+    /// This requires the PhantomData with immutable reference to ensure that the texture
+    /// is not modified while this glyph instance exists
+    texture_size: (u32, u32),
+    /// Area in the texture where the glyph resides
+    tex_area:     glium::Rect,
+    /// guard to prevent resizing of the texture whose size we have stored
+    phantom:      PhantomData<&'a usize>,
 }
 
-impl Glyph {
-    pub fn vertices(&self, p: (f32, f32), s: (f32, f32), tex_size: (u32, u32), fg: [f32; 3], bg: [f32; 3]) -> [TexturedVertex; 6] {
+impl<'a> Glyph<'a> {
+    pub fn vertices(&self, p: (f32, f32), s: (f32, f32), fg: [f32; 3], bg: [f32; 3]) -> [TexturedVertex; 6] {
+        let (width, height) = self.texture_size;
+
         // vertex positions
         let l =  p.0        as f32;
         let r = (p.0 + s.0) as f32;
@@ -217,10 +228,10 @@ impl Glyph {
         let t = (p.1 + s.1) as f32;
 
         // texture positions
-        let tl = (self.tex_area.left)                          as f32 / tex_size.0 as f32;
-        let tr = (self.tex_area.left + self.tex_area.width)    as f32 / tex_size.0 as f32;
-        let tb = (self.tex_area.bottom)                        as f32 / tex_size.1 as f32;
-        let tt = (self.tex_area.bottom + self.tex_area.height) as f32 / tex_size.1 as f32;
+        let tl = (self.tex_area.left)                          as f32 / width  as f32;
+        let tr = (self.tex_area.left + self.tex_area.width)    as f32 / width  as f32;
+        let tb = (self.tex_area.bottom)                        as f32 / height as f32;
+        let tt = (self.tex_area.bottom + self.tex_area.height) as f32 / height as f32;
 
         [
             TexturedVertex { xy: [l, b], fg_rgb: fg, bg_rgb: bg, st: [tl, tt] },
