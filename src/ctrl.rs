@@ -1,5 +1,4 @@
 use std::io;
-use std::str;
 use std::fmt;
 use std::result;
 
