@@ -40,8 +40,9 @@ impl Character {
     }
 }
 
-pub struct Term<'a, F> where F: 'a + glium::backend::Facade {
-    glyphs: tex::GlyphMap<'a, F>,
+pub struct Term<'a, F, R>
+  where F: 'a + glium::backend::Facade, R: 'a + tex::GlyphRenderer<u8> {
+    glyphs: tex::GlyphMap<'a, F, R>,
     /// Terminal size, (columns, rows)
     size:   (usize, usize),
     /// Cursor position (column, row)
@@ -53,12 +54,13 @@ pub struct Term<'a, F> where F: 'a + glium::backend::Facade {
     data:   Vec<Vec<Character>>,
 }
 
-impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
-    pub fn new(glyph_map: tex::GlyphMap<'a, F>) -> Self {
+impl<'a, F, R> Term<'a, F, R>
+  where F: 'a + glium::backend::Facade, R: 'a + tex::GlyphRenderer<u8> {
+    pub fn new(glyph_map: tex::GlyphMap<'a, F, R>) -> Self {
         Term::new_with_size(glyph_map, (0, 0))
     }
 
-    pub fn new_with_size(glyph_map: tex::GlyphMap<'a, F>, size: (usize, usize)) -> Self {
+    pub fn new_with_size(glyph_map: tex::GlyphMap<'a, F, R>, size: (usize, usize)) -> Self {
         let data: Vec<Vec<Character>> = (0..size.1).map(|_| (0..size.0).map(|_| Character::default()).collect()).collect();
 
         Term {
@@ -197,7 +199,7 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
         self.glyphs.texture()
     }
 
-    pub fn vertices(&mut self) -> Vec<tex::TexturedVertex> {
+    pub fn vertices(&mut self, scale: (f32, f32), cellsize: (f32, f32), offset: (f32, f32)) -> Vec<tex::TexturedVertex> {
         for r in self.data.iter() {
             for c in r.iter() {
                 if c.glyph != 0 {
@@ -206,29 +208,26 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
             }
         }
 
-        let w     = self.size.0 as f32 / 2.0;
-        let h     = self.size.1 as f32 / 2.0;
+        let mut vertices  = Vec::new();
+        let glyph_map = &self.glyphs;
 
-        let mut d = Vec::new();
+        for (row, r) in self.data.iter().enumerate() {
+            for (col, c) in r.iter().enumerate().filter(|&(_, c)| c.glyph != 0) {
+                if let Some(g) = glyph_map.get(c.glyph) {
+                    let position = (offset.0 + col as f32 * cellsize.0 * scale.0, offset.1 - (row + 1) as f32 * cellsize.1 * scale.1);
+                    let charsize = (g.width as f32 * scale.0, g.height as f32 * scale.1);
+                    let vs       = g.vertices(position, charsize, c.get_fg(), c.get_bg());
 
-        let glyph_map = &mut self.glyphs;
-
-        for vs in self.data.iter().enumerate()
-            .flat_map(|(i, r)|
-                      r.iter().enumerate()
-                          .filter(|&(_, c)| c.glyph != 0)
-                          .filter_map(|(j, c)|
-                                      glyph_map.get(c.glyph)
-                                      .map(|l|
-                                           l.vertices(((j as f32 - w) / w, (h - 1.0 - i as f32) / h), (1.0 / w, 1.0 / h), c.get_fg(), c.get_bg()))).collect::<Vec<[tex::TexturedVertex; 6]>>()) {
-            for v in vs.iter() {
-                d.push(*v);
+                    for v in vs.into_iter() {
+                        vertices.push(*v);
+                    }
+                }
             }
         }
 
-        d
+        vertices
     }
-    
+
     pub fn pump<T>(&mut self, iter: T) where T: Iterator<Item=ctrl::Seq> {
         for i in iter {
             use ctrl::Seq::*;
@@ -255,7 +254,7 @@ impl<'a, F> Term<'a, F> where F: 'a + glium::backend::Facade {
                     self.set_pos_diff((0, 1));
                     self.set_pos_col(0)
                 },
-                _                                                      => println!("> {:?}", i)
+                _                                                      => {} // println!("> {:?}", i)
             }
         }
     }

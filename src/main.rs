@@ -6,10 +6,6 @@ extern crate glutin;
 extern crate glium;
 extern crate freetype as ft;
 
-use std::collections;
-use std::cmp;
-use std::fmt;
-
 mod ctrl;
 mod pty;
 mod tex;
@@ -32,22 +28,12 @@ fn main() {
     }
 }
 
-fn gl_ortho(left: f32, right: f32, bottom: f32, top: f32, near_val: f32, far_val: f32) -> [[f32; 4]; 4] {
-    let r_l: f32 = right   - left;
-    let t_b: f32 = top     - bottom;
-    let f_n: f32 = far_val - near_val;
-
-    [
-        [ 2.0 / r_l, 0.0,         0.0,        -(right + left)       / r_l ],
-        [ 0.0,       2.0 / t_b ,  0.0,        -(top   + bottom)     / t_b ],
-        [ 0.0,       0.0,        -2.0 / f_n , -(far_val + near_val) / f_n ],
-        [ 0.0,       0.0,         0.0,         1.0],
-    ]
+/// Truncates a freetype 16.16 fixed-point values to the integer value.
+fn ft_to_pixels(fixed_float: i64) -> i32 {
+    (fixed_float >> 6) as i32
 }
 
-
-const FONT_SIZE: isize = 18;
-const DISPLAY_PPI: u32 = 72;
+const FONT_SIZE:   u32 = 16;
 
 fn window(mut m: pty::Fd) {
     use clock_ticks;
@@ -70,13 +56,18 @@ fn window(mut m: pty::Fd) {
     let ft_lib = ft::Library::init().unwrap();
     let ft_face = ft_lib.new_face("./DejaVuSansMono/DejaVu Sans Mono for Powerline.ttf", 0).unwrap();
 
-    ft_face.set_char_size(FONT_SIZE << 6, 0, DISPLAY_PPI, 0).unwrap();
+    ft_face.set_pixel_sizes(0, FONT_SIZE).unwrap();
 
     let ft_metrics = ft_face.size_metrics().expect("Could not load size metrics from font face");
-    let c_width    = (ft_metrics.max_advance >> 6) as u32 + 1;
-    let c_height   = (ft_metrics.height >> 6) as u32 + 1;
+    let c_width    = (ft_to_pixels(ft_metrics.max_advance) + 1) as u32;
+    let c_height   = (ft_to_pixels(ft_metrics.height) + 1) as u32;
+    
+    println!("character height: {}, width: {}", c_height, c_width);
 
-    let mut t = term::Term::new_with_size(tex::GlyphMap::new(&display, ft_face), (10, 10));
+    // let glyph_renderer = tex::FTMonoGlyphRenderer::new(ft_face);
+    let glyph_renderer = tex::FTGrayscaleGlyphRenderer::new(ft_face);
+
+    let mut t = term::Term::new_with_size(tex::GlyphMap::new(&display, glyph_renderer), (10, 10));
 
     let indices = index::NoIndices(index::PrimitiveType::TrianglesList);
     let program = glium::Program::from_source(&display,
@@ -102,7 +93,7 @@ fn window(mut m: pty::Fd) {
         ",
         "   #version 410
 
-            uniform sampler2D texture_diffuse;
+            uniform sampler2D tex;
 
             in vec3 pass_fg_rgb;
             in vec3 pass_bg_rgb;
@@ -111,15 +102,14 @@ fn window(mut m: pty::Fd) {
             out vec4 out_color;
 
             void main() {
-                float a = texture(texture_diffuse, pass_st).r;
+                // out_color = texture(tex, pass_st);
+                float a = texture(tex, pass_st).r;
                 out_color = vec4(pass_bg_rgb, 1) * (1 - a) + vec4(pass_fg_rgb, 1) * a;
             }
         ",
         // optional geometry shader
         None
         ).unwrap();
-
-    let params = glium::DrawParameters::new(&display);
 
     display.get_window().map(|w| w.set_title("RuSt Based openGL Virtual Terminal"));
 
@@ -139,11 +129,11 @@ fn window(mut m: pty::Fd) {
 
         while accumulator >= FIXED_TIME_STAMP {
             accumulator -= FIXED_TIME_STAMP;
-            
+
             // FIXME: Implement proper reusable parser instance
             // Should preferably allow more reuse of allocated memory
             let mut data = Vec::new();
-            
+
             while let Some(i) = p.next() {
                 match i {
                     Ok(c) => if let ctrl::Seq::SetWindowTitle(ref title) = c {
@@ -180,28 +170,25 @@ fn window(mut m: pty::Fd) {
             if buf_size != prev_bufsize {
                 prev_bufsize = buf_size;
 
-                t.resize(((prev_bufsize.0 / c_width) as usize, ((prev_bufsize.1 / c_height) as usize)));
+                t.resize(((buf_size.0 / c_width) as usize, ((buf_size.1 / c_height) as usize)));
             }
 
             if t.is_dirty() {
                 t.set_dirty(false);
 
                 // TODO: Reuse?
-                let vertices = t.vertices();
+                // Character quad size, scaled for pixels
+                let scale    = (2.0 / buf_size.0 as f32, 2.0 / buf_size.1 as f32);
+                let cellsize = (c_width as f32, c_height as f32);
+                let vertices = t.vertices(scale, cellsize, (-1.0, 1.0));
                 let vertex_buffer = glium::VertexBuffer::new(&display, &vertices).unwrap();
                 let uniforms = uniform! {
-                    matrix: [
-                        [ 1.0, 0.0, 0.0, 0.0 ],
-                        [ 0.0, 1.0, 0.0, 0.0 ],
-                        [ 0.0, 0.0, 1.0, 0.0 ],
-                        [ 0.0, 0.0, 0.0, 1.0 ],
-                    ],
-                    tex: t.texture(),
+                    tex: glium::uniforms::Sampler::new(t.texture()).magnify_filter(glium::uniforms::MagnifySamplerFilter::Nearest),
                 };
 
                 let mut target = display.draw();
                 target.clear_color(1.0, 1.0, 1.0, 1.0);
-                target.draw(&vertex_buffer, &indices, &program, &uniforms, &params).unwrap();
+                target.draw(&vertex_buffer, &indices, &program, &uniforms, &Default::default()).unwrap();
                 target.finish().unwrap();
                 println!("{:?}", buf_size);
             }
