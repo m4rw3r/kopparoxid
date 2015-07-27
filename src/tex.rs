@@ -164,27 +164,48 @@ impl fmt::Display for GlyphError {
 pub trait GlyphRenderer<P: glium::texture::PixelValue + Clone> {
     fn render<F>(&mut self, glyph: usize, f: F) -> Result<(), GlyphError>
       where F: FnOnce(glium::texture::RawImage2d<P>, Padding) -> Result<(), GlyphError>;
+    /// Returns the (width, height) of the glyphs in pixels.
+    fn glyph_size(&self) -> (u32, u32);
 }
 
-pub struct FTMonoGlyphRenderer<'a> {
-    ft_face: ft::Face<'a>
+pub enum FTRenderMode{
+    Monochrome,
+    Greyscale
 }
 
-impl<'a> FTMonoGlyphRenderer<'a> {
-    pub fn new(ft_face: ft::Face<'a>) -> Self {
-        FTMonoGlyphRenderer{
-            ft_face: ft_face,
+pub struct FTGlyphRenderer<'a> {
+    ft_face:     ft::Face<'a>,
+    render_mode: FTRenderMode,
+    glyphsize:   (u32, u32)
+}
+
+impl<'a> FTGlyphRenderer<'a> {
+    pub fn new(ft_face: ft::Face<'a>, mode: FTRenderMode) -> Self {
+        // FIXME: Use try!
+        let ft_metrics = ft_face.size_metrics().expect("Could not load size metrics from font face");
+        let width      = ((ft_metrics.max_advance >> 6) + 1) as u32;
+        let height     = ((ft_metrics.height >> 6) + 1) as u32;
+
+        FTGlyphRenderer{
+            ft_face:     ft_face,
+            render_mode: mode,
+            glyphsize:   (width, height),
         }
     }
 }
 
-impl<'a> GlyphRenderer<u8> for FTMonoGlyphRenderer<'a> {
+impl<'a> GlyphRenderer<u8> for FTGlyphRenderer<'a> {
     fn render<F>(&mut self, glyph: usize, f: F) -> Result<(), GlyphError>
       where F: FnOnce(glium::texture::RawImage2d<u8>, Padding) -> Result<(), GlyphError> {
         use std::borrow::Cow;
         use glium::texture;
 
-        try!(self.ft_face.load_char(glyph, ft::face::RENDER | ft::face::TARGET_MONO));
+        let target = match self.render_mode {
+            FTRenderMode::Monochrome => ft::face::RENDER | ft::face::TARGET_MONO,
+            FTRenderMode::Greyscale  => ft::face::RENDER,
+        };
+
+        try!(self.ft_face.load_char(glyph, target));
 
         let g = self.ft_face.glyph();
         let glyph_bitmap = g.bitmap();
@@ -199,8 +220,13 @@ impl<'a> GlyphRenderer<u8> for FTMonoGlyphRenderer<'a> {
         let right  = cmp::max(0, advance - g.bitmap_left() - glyph_bitmap.width());
         let bottom = cmp::max(0, height - top - glyph_bitmap.rows());
 
+        let texdata = match self.render_mode {
+            FTRenderMode::Monochrome => Cow::Owned(monochrome_to_grayscale(&glyph_bitmap)),
+            FTRenderMode::Greyscale  => Cow::Borrowed(glyph_bitmap.buffer()),
+        };
+
         f(texture::RawImage2d{
-            data:   Cow::Owned(monochrome_to_grayscale(&glyph_bitmap)),
+            data:   texdata,
             width:  glyph_bitmap.width() as u32,
             height: glyph_bitmap.rows()  as u32,
             format: texture::ClientFormat::U8
@@ -212,53 +238,9 @@ impl<'a> GlyphRenderer<u8> for FTMonoGlyphRenderer<'a> {
             bottom: bottom as u32
         })
     }
-}
 
-pub struct FTGrayscaleGlyphRenderer<'a> {
-    ft_face: ft::Face<'a>
-}
-
-impl<'a> FTGrayscaleGlyphRenderer<'a> {
-    pub fn new(ft_face: ft::Face<'a>) -> Self {
-        FTGrayscaleGlyphRenderer{
-            ft_face: ft_face,
-        }
-    }
-}
-
-impl<'a> GlyphRenderer<u8> for FTGrayscaleGlyphRenderer<'a> {
-    fn render<F>(&mut self, glyph: usize, f: F) -> Result<(), GlyphError>
-      where F: FnOnce(glium::texture::RawImage2d<u8>, Padding) -> Result<(), GlyphError> {
-        use std::borrow::Cow;
-        use glium::texture;
-
-        try!(self.ft_face.load_char(glyph, ft::face::RENDER));
-
-        let g = self.ft_face.glyph();
-        let glyph_bitmap = g.bitmap();
-
-        let metrics  = try!(self.ft_face.size_metrics().ok_or(GlyphError::MissingGlyphMetrics(glyph)));
-        let height   = (metrics.height   >> 6) as i32;
-        let ascender = (metrics.ascender >> 6) as i32;
-        let advance  = (g.advance().x    >> 6) as i32;
-
-        let left   = cmp::max(0, g.bitmap_left() as u32);
-        let top    = cmp::max(0, ascender - g.bitmap_top());
-        let right  = cmp::max(0, advance - g.bitmap_left() - glyph_bitmap.width());
-        let bottom = cmp::max(0, height - top - glyph_bitmap.rows());
-
-        f(texture::RawImage2d{
-            data:   Cow::Borrowed(glyph_bitmap.buffer()),
-            width:  glyph_bitmap.width() as u32,
-            height: glyph_bitmap.rows() as u32,
-            format: texture::ClientFormat::U8
-        },
-        Padding{
-            left:   left   as u32,
-            top:    top    as u32,
-            right:  right  as u32,
-            bottom: bottom as u32
-        })
+    fn glyph_size(&self) -> (u32, u32) {
+        self.glyphsize
     }
 }
 
@@ -327,14 +309,13 @@ impl<'a, F, R> GlyphMap<'a, F, R>
 #[derive(Copy, Clone, Debug)]
 pub struct TexturedVertex {
     /// Vertex coordinates [left, bottom]
-    xy:     [f32; 2],
-    fg_rgb: [f32; 3],
-    bg_rgb: [f32; 3],
+    xy:  [f32; 2],
+    rgb: [f32; 3],
     /// Texture coordinates [left, bottom]
-    st:     [f32; 2],
+    st:  [f32; 2],
 }
 
-implement_vertex!(TexturedVertex, xy, fg_rgb, bg_rgb, st);
+implement_vertex!(TexturedVertex, xy, rgb, st);
 
 #[derive(Copy, Clone, Debug)]
 pub struct Glyph<'a> {
@@ -358,9 +339,8 @@ impl<'a> Glyph<'a> {
     /// Returns a list of vertices for two triangles making up the quad for this texture.
     /// 
     /// ``p`` is the position of the lower-left corner of the quad, ``s`` is the width and
-    /// height of the quad. ``fg`` is the foreground RGB color and ``bg`` is the background
-    /// color.
-    pub fn vertices(&self, p: (f32, f32), s: (f32, f32), fg: [f32; 3], bg: [f32; 3]) -> [TexturedVertex; 6] {
+    /// height of the quad. ``rgb`` is the foreground RGB color.
+    pub fn vertices(&self, p: (f32, f32), s: (f32, f32), rgb: [f32; 3]) -> [TexturedVertex; 6] {
         // vertex positions
         let l =  p.0        as f32;
         let r = (p.0 + s.0) as f32;
@@ -368,13 +348,13 @@ impl<'a> Glyph<'a> {
         let t = (p.1 + s.1) as f32;
 
         [
-            TexturedVertex { xy: [l, b], fg_rgb: fg, bg_rgb: bg, st: [self.left,  self.top   ] },
-            TexturedVertex { xy: [l, t], fg_rgb: fg, bg_rgb: bg, st: [self.left,  self.bottom] },
-            TexturedVertex { xy: [r, t], fg_rgb: fg, bg_rgb: bg, st: [self.right, self.bottom] },
+            TexturedVertex { xy: [l, b], rgb: rgb, st: [self.left,  self.top   ] },
+            TexturedVertex { xy: [l, t], rgb: rgb, st: [self.left,  self.bottom] },
+            TexturedVertex { xy: [r, t], rgb: rgb, st: [self.right, self.bottom] },
 
-            TexturedVertex { xy: [r, t], fg_rgb: fg, bg_rgb: bg, st: [self.right, self.bottom] },
-            TexturedVertex { xy: [r, b], fg_rgb: fg, bg_rgb: bg, st: [self.right, self.top   ] },
-            TexturedVertex { xy: [l, b], fg_rgb: fg, bg_rgb: bg, st: [self.left,  self.top   ] },
+            TexturedVertex { xy: [r, t], rgb: rgb, st: [self.right, self.bottom] },
+            TexturedVertex { xy: [r, b], rgb: rgb, st: [self.right, self.top   ] },
+            TexturedVertex { xy: [l, b], rgb: rgb, st: [self.left,  self.top   ] },
         ]
     }
 }

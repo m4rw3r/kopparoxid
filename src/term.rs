@@ -3,6 +3,7 @@ use ctrl;
 use glium;
 use std::cmp;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Copy, Clone, Default)]
 struct Character {
@@ -40,9 +41,7 @@ impl Character {
     }
 }
 
-pub struct Term<'a, F, R>
-  where F: 'a + glium::backend::Facade, R: 'a + tex::GlyphRenderer<u8> {
-    glyphs: tex::GlyphMap<'a, F, R>,
+pub struct Term {
     /// Terminal size, (columns, rows)
     size:   (usize, usize),
     /// Cursor position (column, row)
@@ -54,17 +53,15 @@ pub struct Term<'a, F, R>
     data:   Vec<Vec<Character>>,
 }
 
-impl<'a, F, R> Term<'a, F, R>
-  where F: 'a + glium::backend::Facade, R: 'a + tex::GlyphRenderer<u8> {
-    pub fn new(glyph_map: tex::GlyphMap<'a, F, R>) -> Self {
-        Term::new_with_size(glyph_map, (0, 0))
+impl Term {
+    pub fn new() -> Self {
+        Term::new_with_size((0, 0))
     }
 
-    pub fn new_with_size(glyph_map: tex::GlyphMap<'a, F, R>, size: (usize, usize)) -> Self {
+    pub fn new_with_size(size: (usize, usize)) -> Self {
         let data: Vec<Vec<Character>> = (0..size.1).map(|_| (0..size.0).map(|_| Character::default()).collect()).collect();
 
         Term {
-            glyphs: glyph_map,
             size:   size,
             pos:    (0, 0),
             cur_fg: ctrl::Color::Default,
@@ -195,39 +192,6 @@ impl<'a, F, R> Term<'a, F, R>
         }
     }
 
-    pub fn texture(&self) -> &glium::Texture2d {
-        self.glyphs.texture()
-    }
-
-    pub fn vertices(&mut self, scale: (f32, f32), cellsize: (f32, f32), offset: (f32, f32)) -> Vec<tex::TexturedVertex> {
-        for r in self.data.iter() {
-            for c in r.iter() {
-                if c.glyph != 0 {
-                    self.glyphs.load(c.glyph).unwrap();
-                }
-            }
-        }
-
-        let mut vertices  = Vec::new();
-        let glyph_map = &self.glyphs;
-
-        for (row, r) in self.data.iter().enumerate() {
-            for (col, c) in r.iter().enumerate().filter(|&(_, c)| c.glyph != 0) {
-                if let Some(g) = glyph_map.get(c.glyph) {
-                    let position = (offset.0 + col as f32 * cellsize.0 * scale.0, offset.1 - (row + 1) as f32 * cellsize.1 * scale.1);
-                    let charsize = (g.width as f32 * scale.0, g.height as f32 * scale.1);
-                    let vs       = g.vertices(position, charsize, c.get_fg(), c.get_bg());
-
-                    for v in vs.into_iter() {
-                        vertices.push(*v);
-                    }
-                }
-            }
-        }
-
-        vertices
-    }
-
     pub fn pump<T>(&mut self, iter: T) where T: Iterator<Item=ctrl::Seq> {
         for i in iter {
             use ctrl::Seq::*;
@@ -257,5 +221,204 @@ impl<'a, F, R> Term<'a, F, R>
                 _                                                      => {} // println!("> {:?}", i)
             }
         }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+struct ColoredVertex {
+    /// Vertex coordinates [left, bottom]
+    xy:  [f32; 2],
+    /// Vertex color
+    rgb: [f32; 3],
+}
+
+implement_vertex!(ColoredVertex, xy, rgb);
+
+/// Structure used to render a Term instance onto a GL surface
+pub struct GlTerm<'a, F, R>
+  where F: 'a + glium::backend::Facade, R: 'a + tex::GlyphRenderer<u8> {
+    context:   Rc<glium::backend::Context>,
+    glyphs:    tex::GlyphMap<'a, F, R>,
+    fg_buffer: Vec<tex::TexturedVertex>,
+    bg_buffer: Vec<ColoredVertex>,
+    fg_shader: glium::Program,
+    bg_shader: glium::Program,
+    /// Cellsize is the pixel-size of a cell
+    cellsize:  (f32, f32),
+}
+
+impl<'a, F, R> GlTerm<'a, F, R>
+  where F: 'a + glium::backend::Facade, R: 'a + tex::GlyphRenderer<u8> {
+    pub fn new(display: &'a F, glyph_renderer: R) -> Result<Self, glium::ProgramCreationError> {
+        let fg_shader = try!(glium::Program::from_source(display,
+            // vertex shader
+            "   #version 410
+
+                in vec2 xy;
+                in vec3 rgb;
+                in vec2 st;
+
+                out vec3 pass_rgb;
+                out vec2 pass_st;
+
+                void main() {
+                    gl_Position = vec4(xy, 0, 1);
+
+                    pass_rgb = rgb;
+                    pass_st  = st;
+                }
+            ",
+            "   #version 410
+
+                uniform sampler2D tex;
+
+                in vec3 pass_rgb;
+                in vec2 pass_st;
+
+                out vec4 out_color;
+
+                void main() {
+                    out_color = vec4(pass_rgb, texture(tex, pass_st).r);
+                }
+            ",
+            None
+        ));
+        let bg_shader = try!(glium::Program::from_source(display,
+            // vertex shader
+            "   #version 410
+
+                in vec2 xy;
+                in vec3 rgb;
+
+                out vec3 pass_rgb;
+
+                void main() {
+                    gl_Position = vec4(xy, 0, 1);
+
+                    pass_rgb = rgb;
+                }
+            ",
+            "   #version 410
+
+                in vec3 pass_rgb;
+
+                out vec4 out_color;
+
+                void main() {
+                    out_color = vec4(pass_rgb, 1);
+                }
+            ",
+            None
+        ));
+
+        let cellsize = glyph_renderer.glyph_size();
+
+        Ok(GlTerm {
+            context:   display.get_context().clone(),
+            glyphs:    tex::GlyphMap::new(display, glyph_renderer),
+            fg_buffer: Vec::new(),
+            bg_buffer: Vec::new(),
+            fg_shader: fg_shader,
+            bg_shader: bg_shader,
+            cellsize:  (cellsize.0 as f32, cellsize.1 as f32),
+        })
+    }
+
+    fn load_glyphs(&mut self, t: &Term) {
+        for r in t.data.iter() {
+            for c in r.iter() {
+                if c.glyph != 0 {
+                    self.glyphs.load(c.glyph).unwrap();
+                }
+            }
+        }
+    }
+
+    fn load_bg_vertices(&mut self, t: &Term, scale: (f32, f32), offset: (f32, f32)) {
+        let cellsize = self.cellsize;
+
+        self.bg_buffer.truncate(0);
+
+        for (row, r) in t.data.iter().enumerate() {
+            for (col, c) in r.iter().enumerate().filter(|&(_, c)| c.glyph != 0) {
+                let l   = offset.0 + col as f32 * cellsize.0 * scale.0;
+                let r   = l + cellsize.0 * scale.0;
+                let b   = offset.1 - (row + 1) as f32 * cellsize.1 * scale.1;
+                let t   = b + cellsize.1 * scale.1;
+                let rgb = c.get_bg();
+
+                self.bg_buffer.push(ColoredVertex { xy: [l, b], rgb: rgb });
+                self.bg_buffer.push(ColoredVertex { xy: [l, t], rgb: rgb });
+                self.bg_buffer.push(ColoredVertex { xy: [r, t], rgb: rgb });
+
+                self.bg_buffer.push(ColoredVertex { xy: [r, t], rgb: rgb });
+                self.bg_buffer.push(ColoredVertex { xy: [r, b], rgb: rgb });
+                self.bg_buffer.push(ColoredVertex { xy: [l, b], rgb: rgb });
+            }
+        }
+    }
+
+    fn load_fg_vertices(&mut self, t: &Term, scale: (f32, f32), offset: (f32, f32)) {
+        let cellsize = self.cellsize;
+
+        self.fg_buffer.truncate(0);
+
+        for (row, r) in t.data.iter().enumerate() {
+            for (col, c) in r.iter().enumerate().filter(|&(_, c)| c.glyph != 0) {
+                if let Some(g) = self.glyphs.get(c.glyph) {
+                    let left     = offset.0 + col as f32 * cellsize.0 * scale.0;
+                    let bottom   = offset.1 - (row + 1) as f32 * cellsize.1 * scale.1;
+                    let charsize = (g.width as f32 * scale.0, g.height as f32 * scale.1);
+                    let vs       = g.vertices((left, bottom), charsize, c.get_fg());
+
+                    for v in vs.into_iter() {
+                        self.fg_buffer.push(*v);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Draws the terminal onto ``target``.
+    /// 
+    ///  * ``t`` is the terminal data to draw.
+    ///  * ``fb_dim`` is the framebuffer dimensions which is needed to avoid blurry text and/or
+    ///    stretching. 
+    ///  * ``offset`` is the gl-offset to render at.
+    pub fn draw<T>(&mut self, target: &mut T, t: &Term, fb_dim: (u32, u32), offset: (f32, f32))
+      where T: glium::Surface {
+        use glium::index;
+        use glium::draw_parameters::BlendingFunction;
+        use glium::draw_parameters::LinearBlendingFactor;
+
+        let indices = index::NoIndices(index::PrimitiveType::TrianglesList);
+        let scale   = (2.0 / fb_dim.0 as f32, 2.0 / fb_dim.1 as f32);
+
+        self.load_glyphs(t);
+
+        self.load_bg_vertices(t, scale, offset);
+        self.load_fg_vertices(t, scale, offset);
+
+        let uniforms = uniform! {
+            tex: glium::uniforms::Sampler::new(self.glyphs.texture())
+                .magnify_filter(glium::uniforms::MagnifySamplerFilter::Nearest),
+        };
+        let params = glium::DrawParameters {
+            blending_function: Some(BlendingFunction::Addition {
+                source:      LinearBlendingFactor::SourceAlpha,
+                destination: LinearBlendingFactor::OneMinusSourceAlpha,
+            }),
+            ..Default::default()
+        };
+
+        // TODO: Can this be reused?
+        let bg_buffer = glium::VertexBuffer::new(&self.context, &self.bg_buffer).unwrap();
+        let fg_buffer = glium::VertexBuffer::new(&self.context, &self.fg_buffer).unwrap();
+
+        // TODO: Use proper background setting from terminal
+        target.clear_color(1.0, 1.0, 1.0, 1.0);
+
+        target.draw(&bg_buffer, &indices, &self.bg_shader, &uniforms, &params).unwrap();
+        target.draw(&fg_buffer, &indices, &self.fg_shader, &uniforms, &params).unwrap();
     }
 }

@@ -41,8 +41,6 @@ fn window(mut m: pty::Fd) {
     use std::process;
     use std::thread;
     use glium::DisplayBuild;
-    use glium::index;
-    use glium::Surface;
 
     m.set_noblock();
 
@@ -64,60 +62,18 @@ fn window(mut m: pty::Fd) {
     
     println!("character height: {}, width: {}", c_height, c_width);
 
-    // let glyph_renderer = tex::FTMonoGlyphRenderer::new(ft_face);
-    let glyph_renderer = tex::FTGrayscaleGlyphRenderer::new(ft_face);
+    let glyph_renderer = tex::FTGlyphRenderer::new(ft_face, tex::FTRenderMode::Greyscale);
 
-    let mut t = term::Term::new_with_size(tex::GlyphMap::new(&display, glyph_renderer), (10, 10));
+    let mut t = term::Term::new_with_size((10, 10));
+    let mut g = term::GlTerm::new(&display, glyph_renderer).unwrap();
 
-    let indices = index::NoIndices(index::PrimitiveType::TrianglesList);
-    let program = glium::Program::from_source(&display,
-        // vertex shader
-        "   #version 410
-
-            in vec2 xy;
-            in vec3 fg_rgb;
-            in vec3 bg_rgb;
-            in vec2 st;
-
-            out vec3 pass_fg_rgb;
-            out vec3 pass_bg_rgb;
-            out vec2 pass_st;
-
-            void main() {
-                gl_Position = vec4(xy, 0, 1);
-
-                pass_fg_rgb = fg_rgb;
-                pass_bg_rgb = bg_rgb;
-                pass_st     = st;
-            }
-        ",
-        "   #version 410
-
-            uniform sampler2D tex;
-
-            in vec3 pass_fg_rgb;
-            in vec3 pass_bg_rgb;
-            in vec2 pass_st;
-
-            out vec4 out_color;
-
-            void main() {
-                // out_color = texture(tex, pass_st);
-                float a = texture(tex, pass_st).r;
-                out_color = vec4(pass_bg_rgb, 1) * (1 - a) + vec4(pass_fg_rgb, 1) * a;
-            }
-        ",
-        // optional geometry shader
-        None
-        ).unwrap();
-
-    display.get_window().map(|w| w.set_title("RuSt Based openGL Virtual Terminal"));
+    display.get_window().map(|w| w.set_title("Kopparoxid"));
 
     unsafe { display.get_window().map(|w| w.make_current()); };
 
     let mut accumulator    = 0;
     let mut previous_clock = clock_ticks::precise_time_ns();
-    let mut prev_bufsize  = display.get_framebuffer_dimensions();
+    let mut prev_bufsize   = display.get_framebuffer_dimensions();
 
     t.resize(((prev_bufsize.0 / c_width) as usize, (prev_bufsize.1 / c_height) as usize));
 
@@ -174,23 +130,13 @@ fn window(mut m: pty::Fd) {
             }
 
             if t.is_dirty() {
-                t.set_dirty(false);
-
-                // TODO: Reuse?
-                // Character quad size, scaled for pixels
-                let scale    = (2.0 / buf_size.0 as f32, 2.0 / buf_size.1 as f32);
-                let cellsize = (c_width as f32, c_height as f32);
-                let vertices = t.vertices(scale, cellsize, (-1.0, 1.0));
-                let vertex_buffer = glium::VertexBuffer::new(&display, &vertices).unwrap();
-                let uniforms = uniform! {
-                    tex: glium::uniforms::Sampler::new(t.texture()).magnify_filter(glium::uniforms::MagnifySamplerFilter::Nearest),
-                };
-
                 let mut target = display.draw();
-                target.clear_color(1.0, 1.0, 1.0, 1.0);
-                target.draw(&vertex_buffer, &indices, &program, &uniforms, &Default::default()).unwrap();
+
+                g.draw(&mut target, &t, buf_size, (-1.0, 1.0));
+
                 target.finish().unwrap();
-                println!("{:?}", buf_size);
+
+                t.set_dirty(false);
             }
         }
 
