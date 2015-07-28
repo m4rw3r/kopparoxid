@@ -1,6 +1,18 @@
 use std::io;
 use std::fmt;
+use std::cmp;
+use std::str;
 use std::result;
+
+static UTF8_TRAILING: [u8; 256] = [
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3,4,4,4,4,5,5,5,5];
 
 #[derive(Debug)]
 pub enum Seq {
@@ -16,8 +28,6 @@ pub enum Seq {
     Tab,
     TabVertical,
 
-    Delete,
-
     Unicode(u32),
 
     Index,
@@ -31,9 +41,7 @@ pub enum Seq {
     EndOfGuardedArea,
     StartOfString,
     ReturnTerminalId,
-    ControlSequenceIntroducer,
     StringTerminator,
-    OperatingSystemCommand,
     PrivacyMessage,
     ApplicationProgramCommand,
 
@@ -138,7 +146,7 @@ pub enum Charset {
     Spanish,
     Swedish,
     Swiss,
-    Unicode,
+    // Unicode,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -171,163 +179,105 @@ impl fmt::Display for Error {
     }
 }
 
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+        Error::IoError(err)
+    }
+}
+
 pub type Result = result::Result<Seq, Error>;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ParserState {
     Default,
     ESC,
-    CSI,
-    OSC,
-    CharAttr,
+    CSI(usize),
+    OSC(usize),
     Charset(CharsetIndex),
+    CharsetSuppOrPortuguese(CharsetIndex),
     Unicode(u32, u8),
 }
 
-pub struct Parser<T: io::Read> {
-    src:   io::Bytes<T>,
-    state: ParserState,
-    buf:   Vec<u8>,
+pub struct Parser<'a, T: 'a + io::BufRead> {
+    buffer: &'a mut T,
+    used:   usize,
+    state:  ParserState,
 }
 
-macro_rules! parse_osc (
-    ( $me:ident ) => ({
-        let r = if $me.buf.len() > 2 && $me.buf[1] == b';' {
-            match $me.buf[0] {
-                b'0' => Some(Seq::SetWindowTitle(String::from_utf8_lossy(&$me.buf[2..]).into_owned())), // And icon name
-                b'1' => Some(Seq::SetIconName(String::from_utf8_lossy(&$me.buf[2..]).into_owned())),
-                b'2' => Some(Seq::SetWindowTitle(String::from_utf8_lossy(&$me.buf[2..]).into_owned())),
-                b'3' => Some(Seq::SetXProps(String::from_utf8_lossy(&$me.buf[2..]).into_owned())),
-                b'4' => Some(Seq::SetColorNumber(String::from_utf8_lossy(&$me.buf[2..]).into_owned())),
-                _    => None
-            }
+impl<'a, T: 'a + io::BufRead> Parser<'a, T> {
+    pub fn new(buffer: &'a mut T) -> Self {
+        Parser {
+            buffer: buffer,
+            used:   0,
+            state:  ParserState::Default,
         }
-        else {
-            None
-        };
+    }
+}
 
-        return match r {
-            Some(x) => {
-                $me.state = ParserState::Default;
-
-                $me.buf.truncate(0);
-
-                Some(Ok(x))
-            },
-            _ => {
-                let r = Some(Err(Error::ParseError($me.state, $me.buf.clone())));
-
-                $me.state = ParserState::Default;
-
-                $me.buf.truncate(0);
-
-                r
-            }
-        }
-    })
-);
-
-/// Retrieves the next character from the internal iterator.
-macro_rules! next_char (
-    ( $me:ident ) => ( match $me.src.next() {
-        Some(Ok(c))    => c,
-        Some(Err(err)) => {
-            return Some(Err(Error::IoError(err)));
-        },
-        None           => return None
-    } )
-);
-
-/// Returns the next int (or None) from the buffer, separated by ';'.
-/// 
-/// Parses up to the next ';' or the end of the buffer (throwing away
-/// the ';', leaving the reset present in the buffer.
-macro_rules! buf_next_int (
-    ( $me:ident, $typ:ty ) => (
-        String::from_utf8(match $me.buf.iter().position(|c| *c == b';') {
-            Some(p) => {
-                let v = $me.buf[..p].to_vec();
-
-                $me.buf = $me.buf[p+1..].to_vec();
-
-                v
-            },
-            None => {
-                let v = $me.buf.clone();
-
-                $me.buf.truncate(0);
-
-                v
-            }
-        })
-        .ok()
-        .map_or(None, |s| s.parse::<$typ>().ok())
-    )
-);
-
-/// Prints a warning message that a control sequence introducer, attempts
-/// to print the result as a unicode string if possible, otheriwse dumps
-/// byte array.
-/// 
-/// Resets state and buffer.
-macro_rules! unknown_csi (
-    ( $me:ident ) => ({
-        let r = Some(Err(Error::ParseError($me.state, $me.buf.clone())));
-
-        $me.buf.truncate(0);
-
-        $me.state = ParserState::Default;
-
-        return r;
-    });
-
-    ( $me:ident, $buf:ident ) => ({
-        let r = Some(Err(Error::ParseError($me.state, $buf)));
-
-        $me.buf.truncate(0);
-
-        $me.state = ParserState::Default;
-
-        return r;
-    });
-);
-
-/// Returns the given sequence entry and resets the parser state.
-/// Does NOT reset the buffer.
-macro_rules! return_reset (
-    ( $me:ident, $ret:expr ) => ({
-        $me.state = ParserState::Default;
-
-        return Some(Ok($ret));
-    })
-);
-
-static UTF8_TRAILING: [u8; 256] = [
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3,4,4,4,4,5,5,5,5];
-
-impl<T: io::Read> Iterator for Parser<T> {
+impl<'a, T: 'a + io::BufRead> Iterator for Parser<'a, T> {
     type Item = Result;
 
     fn next(&mut self) -> Option<Result> {
-        loop {
+        // println!("used: {}", self.used);
+        // TODO: Is there any way to actually make sure we consume it?
+        self.buffer.consume(self.used);
+
+        let buffer = match self.buffer.fill_buf() {
+            Ok(buf)  => buf,
+            Err(err) => return Some(Err(From::from(err))),
+        };
+
+        if buffer.is_empty() {
+            return None;
+        }
+
+        // println!("{:?}", self.state);
+        // println!("{:?}", String::from_utf8_lossy(From::from(buffer)));
+
+        for (i, &c) in buffer.iter().enumerate() {
+            // println!("s: {:?}", self.state);
+            // Yields a value
+            macro_rules! ret {
+                ( $ret:expr ) => ({
+                    let ret = $ret;
+
+                    // self.buffer.consume(i + 1);
+                    self.used  = i + 1;
+                    self.state = ParserState::Default;
+
+                    return Some(Ok(ret));
+                })
+            };
+
+            // Yields an error
+            macro_rules! err {
+                ( $err:expr ) => ({
+                    let ret = $err;
+
+                    // self.buffer.consume(i + 1);
+                    self.used  = i + 1;
+                    self.state = ParserState::Default;
+
+                    return Some(Err(ret));
+                })
+            };
+
+            macro_rules! buf {
+                ( $start:expr ) => (buffer[$start..i]);
+            };
+
             match self.state {
-                ParserState::Default => match next_char!(self) {
-                    0x07 => return Some(Ok(Seq::Bell)),
-                    0x08 => return Some(Ok(Seq::Backspace)),
-                    0x09 => return Some(Ok(Seq::Tab)),
-                    0x0A => return Some(Ok(Seq::LineFeed)),
-                    0x0B => return Some(Ok(Seq::TabVertical)),
-                    0x0C => return Some(Ok(Seq::FormFeed)),
-                    0x0D => return Some(Ok(Seq::CarriageReturn)),
-                    0x0E => return Some(Ok(Seq::ShiftOut)),
-                    0x0F => return Some(Ok(Seq::ShiftIn)),
+                ParserState::Default => match c {
+                    0x05 => ret!(Seq::ReturnTerminalStatus),
+                    0x07 => ret!(Seq::Bell),
+                    0x08 => ret!(Seq::Backspace),
+                    0x09 => ret!(Seq::Tab),
+                    0x0A => ret!(Seq::LineFeed),
+                    0x0B => ret!(Seq::TabVertical),
+                    0x0C => ret!(Seq::FormFeed),
+                    0x0D => ret!(Seq::CarriageReturn),
+                    0x0E => ret!(Seq::ShiftOut),
+                    0x0F => ret!(Seq::ShiftIn),
 
                     0x1B => self.state = ParserState::ESC,
 
@@ -337,218 +287,275 @@ impl<T: io::Read> Iterator for Parser<T> {
 
                         self.state = ParserState::Unicode(chr, tail - 1)
                     },
-                    c => return Some(Ok(Seq::Unicode(c as u32))),
+                    c => ret!(Seq::Unicode(c as u32)),
                 },
-                ParserState::Unicode(chr, 0) => match next_char!(self) {
-                    c if c > 127 => return_reset!(self, Seq::Unicode((chr << 6) + ((c as u32) & 0x3f))),
-                    c => return Some(Err(Error::UnexpectedUTF8Byte(c)))
+                ParserState::Unicode(chr, 0) => match c {
+                    c if c > 127 => ret!(Seq::Unicode((chr << 6) + ((c as u32) & 0x3f))),
+                    c => err!(Error::UnexpectedUTF8Byte(c))
                 },
-                ParserState::Unicode(chr, i) => match next_char!(self) {
-                    c if c > 127 => {
-                        self.state = ParserState::Unicode((chr << 6) + ((c as u32) & 0x3f), i - 1);
-                    },
-                    c => return Some(Err(Error::UnexpectedUTF8Byte(c)))
+                ParserState::Unicode(chr, i) => match c {
+                    c if c > 127 => self.state = ParserState::Unicode((chr << 6) + ((c as u32) & 0x3f), i - 1),
+                    c => err!(Error::UnexpectedUTF8Byte(c))
                 },
-                ParserState::ESC => match next_char!(self) {
-                    b'D' => return_reset!(self, Seq::Index), /* IND */
-                    b'E' => return_reset!(self, Seq::NextLine), /* NEL */
-                    b'H' => return_reset!(self, Seq::TabSet), /* HTS */
-                    b'M' => return_reset!(self, Seq::ReverseIndex), /* RI */
-                    b'N' => return_reset!(self, Seq::SingleShiftSelectG2CharSet), /* SS2 */
-                    b'O' => return_reset!(self, Seq::SingleShiftSelectG3CharSet), /* SS3 */
-                    b'P' => return_reset!(self, Seq::DeviceControlString), /* DCS */
-                    b'V' => return_reset!(self, Seq::StartOfGuardedArea), /* SPA */
-                    b'W' => return_reset!(self, Seq::EndOfGuardedArea), /* EPA */
-                    b'X' => return_reset!(self, Seq::StartOfString), /* SOS */
-                    b'Z' => return_reset!(self, Seq::ReturnTerminalId), /* DECID */
-                    b'[' => self.state = ParserState::CSI, /* CSI */
-                    b'\\' => return_reset!(self, Seq::StringTerminator), /* ST */
-                    b']' => self.state = ParserState::OSC, /* OSC */
-                    b'^' => return_reset!(self, Seq::PrivacyMessage), /* PM */
-                    b'_' => return_reset!(self, Seq::ApplicationProgramCommand), /* APC */
+                ParserState::ESC => match c {
+                    b'D' => ret!(Seq::Index), /* IND */
+                    b'E' => ret!(Seq::NextLine), /* NEL */
+                    b'H' => ret!(Seq::TabSet), /* HTS */
+                    b'M' => ret!(Seq::ReverseIndex), /* RI */
+                    b'N' => ret!(Seq::SingleShiftSelectG2CharSet), /* SS2 */
+                    b'O' => ret!(Seq::SingleShiftSelectG3CharSet), /* SS3 */
+                    b'P' => ret!(Seq::DeviceControlString), /* DCS */
+                    b'V' => ret!(Seq::StartOfGuardedArea), /* SPA */
+                    b'W' => ret!(Seq::EndOfGuardedArea), /* EPA */
+                    b'X' => ret!(Seq::StartOfString), /* SOS */
+                    b'Z' => ret!(Seq::ReturnTerminalId), /* DECID */
+                    b'[' => self.state = ParserState::CSI(i + 1),
+                    b'\\' => ret!(Seq::StringTerminator), /* ST */
+                    b']' => self.state = ParserState::OSC(i + 1), /* OSC */
+                    b'^' => ret!(Seq::PrivacyMessage), /* PM */
+                    b'_' => ret!(Seq::ApplicationProgramCommand), /* APC */
 
-                    b'>' => return_reset!(self, Seq::SetKeypadMode(KeypadMode::Numeric)),
-                    b'=' => return_reset!(self, Seq::SetKeypadMode(KeypadMode::Application)),
+                    b'>' => ret!(Seq::SetKeypadMode(KeypadMode::Numeric)),
+                    b'=' => ret!(Seq::SetKeypadMode(KeypadMode::Application)),
                     b'(' => self.state = ParserState::Charset(CharsetIndex::G0),
                     b')' => self.state = ParserState::Charset(CharsetIndex::G1),
                     b'*' => self.state = ParserState::Charset(CharsetIndex::G2),
                     b'+' => self.state = ParserState::Charset(CharsetIndex::G3),
 
-                    c => {
-                        self.state = ParserState::Default;
-
-                        return Some(Err(Error::UnknownEscapeChar(c)));
-                    }
+                    c => err!(Error::UnknownEscapeChar(c))
                     // Some(b" ") => match 
                 },
-                ParserState::CSI => match next_char!(self) {
-                    b'm' => self.state = ParserState::CharAttr,
-                    b'J' => {
-                        let r = match buf_next_int!(self, u8) {
-                            Some(1) => Some(Ok(Seq::EraseInDisplay(EraseInDisplay::Above))),
-                            Some(2) => Some(Ok(Seq::EraseInDisplay(EraseInDisplay::All))),
-                            _       => Some(Ok(Seq::EraseInDisplay(EraseInDisplay::Below))),
+                ParserState::CSI(start) => match c {
+                    b'm' => self.state = {
+                        // Color codes
+                        // Multiple control sequences for color codes can be present in the
+                        // same sequence.
+                        use self::CharAttr::*;
+                        use self::CharType::*;
+                        use self::Color::*;
+
+                        // No parameters equals CSI 0 m
+                        // which means Reset
+                        if buf!(start).is_empty() {
+                            ret!(Seq::CharAttr(CharAttr::Reset));
+                        }
+
+                        let mut int_buf = Buffer::new(&buf!(start));
+
+                        let r = match int_buf.next::<u8>() {
+                            Some(0)              => Seq::CharAttr(Reset),
+                            Some(1)              => Seq::CharAttr(Set(Bold)),
+                            Some(2)              => Seq::CharAttr(Set(Faint)),
+                            Some(3)              => Seq::CharAttr(Set(Italicized)),
+                            Some(4)              => Seq::CharAttr(Set(Underlined)),
+                            Some(5)              => Seq::CharAttr(Set(Blink)),
+                            Some(7)              => Seq::CharAttr(Set(Inverse)),
+                            Some(8)              => Seq::CharAttr(Set(Invisible)),
+                            Some(9)              => Seq::CharAttr(Set(CrossedOut)),
+                            Some(21)             => Seq::CharAttr(Set(DoublyUnderlined)),
+                            Some(22)             => Seq::CharAttr(Set(Normal)), /* Not bold, not faint */
+                            Some(23)             => Seq::CharAttr(Unset(Italicized)),
+                            Some(24)             => Seq::CharAttr(Unset(Underlined)),
+                            Some(25)             => Seq::CharAttr(Unset(Blink)),
+                            Some(27)             => Seq::CharAttr(Unset(Inverse)),
+                            Some(28)             => Seq::CharAttr(Unset(Invisible)),
+                            Some(29)             => Seq::CharAttr(Unset(CrossedOut)),
+                            Some(30) | Some(90)  => Seq::CharAttr(FGColor(Black)),
+                            Some(31) | Some(91)  => Seq::CharAttr(FGColor(Red)),
+                            Some(32) | Some(92)  => Seq::CharAttr(FGColor(Green)),
+                            Some(33) | Some(93)  => Seq::CharAttr(FGColor(Yellow)),
+                            Some(34) | Some(94)  => Seq::CharAttr(FGColor(Blue)),
+                            Some(35) | Some(95)  => Seq::CharAttr(FGColor(Magenta)),
+                            Some(36) | Some(96)  => Seq::CharAttr(FGColor(Cyan)),
+                            Some(37) | Some(97)  => Seq::CharAttr(FGColor(White)),
+                            Some(39) | Some(99)  => Seq::CharAttr(FGColor(Default)),
+                            Some(40) | Some(100) => Seq::CharAttr(BGColor(Black)),
+                            Some(41) | Some(101) => Seq::CharAttr(BGColor(Red)),
+                            Some(42) | Some(102) => Seq::CharAttr(BGColor(Green)),
+                            Some(43) | Some(103) => Seq::CharAttr(BGColor(Yellow)),
+                            Some(44) | Some(104) => Seq::CharAttr(BGColor(Blue)),
+                            Some(45) | Some(105) => Seq::CharAttr(BGColor(Magenta)),
+                            Some(46) | Some(106) => Seq::CharAttr(BGColor(Cyan)),
+                            Some(47) | Some(107) => Seq::CharAttr(BGColor(White)),
+                            Some(49)             => Seq::CharAttr(BGColor(Default)),
+                            Some(38)             => match int_buf.next::<u8>() {
+                                Some(2) => match (int_buf.next::<u8>(), int_buf.next::<u8>(), int_buf.next::<u8>()) {
+                                    (Some(r), Some(g), Some(b)) => Seq::CharAttr(FGColor(RGB(r, g, b))),
+                                    _                           => err!(Error::ParseError(self.state, From::from(&buf!(start)))),
+                                },
+                                Some(5) => if let Some(p) = int_buf.next::<u8>() {
+                                    Seq::CharAttr(FGColor(Palette(p)))
+                                } else {
+                                    err!(Error::ParseError(self.state, From::from(&buf!(start))))
+                                },
+                                _ => err!(Error::ParseError(self.state, From::from(&buf!(start)))),
+                            },
+                            Some(48) => match int_buf.next::<u8>() {
+                                Some(2) => match (int_buf.next::<u8>(), int_buf.next::<u8>(), int_buf.next::<u8>()) {
+                                    (Some(r), Some(g), Some(b)) => Seq::CharAttr(BGColor(RGB(r, g, b))),
+                                    _                           => err!(Error::ParseError(self.state, From::from(&buf!(start)))),
+                                },
+                                Some(5) => if let Some(p) = int_buf.next::<u8>() {
+                                    Seq::CharAttr(BGColor(Palette(p)))
+                                } else {
+                                    err!(Error::ParseError(self.state, From::from(&buf!(start))))
+                                },
+                                _ => err!(Error::ParseError(self.state, From::from(&buf!(start)))),
+                            },
+                            _ => err!(Error::ParseError(self.state, From::from(&buf!(start)))),
                         };
 
-                        self.buf.truncate(0);
+                        let used = start + int_buf.used();
 
-                        self.state = ParserState::Default;
-
-                        return r;
-                    },
-                    b'K' => {
-                        let r = match buf_next_int!(self, u8) {
-                            Some(1) => Some(Ok(Seq::EraseInLine(EraseInLine::Left))),
-                            Some(2) => Some(Ok(Seq::EraseInLine(EraseInLine::All))),
-                            _       => Some(Ok(Seq::EraseInLine(EraseInLine::Right))),
+                        if used >= i {
+                            // We have used all the data in this color sequence,
+                            // consume the "m" at the end and reset
+                            self.used  = used + 1;
+                            self.state = ParserState::Default;
+                        } else {
+                            // We still have additional color data to parse,
+                            // leave the state in CSI but reset the buffer offset
+                            // and consume the data we have parsed
+                            self.used  = used;
+                            self.state = ParserState::CSI(0);
                         };
 
-                        self.buf.truncate(0);
-
-                        self.state = ParserState::Default;
-
-                        return r;
+                        return Some(Ok(r));
                     },
+                    b'J' => ret!(match parse_int::<u8>(&buf!(start)) {
+                        Some(1) => Seq::EraseInDisplay(EraseInDisplay::Above),
+                        Some(2) => Seq::EraseInDisplay(EraseInDisplay::All),
+                        _       => Seq::EraseInDisplay(EraseInDisplay::Below),
+                    }),
+                    b'K' => ret!(match parse_int::<u8>(&buf!(start)) {
+                        Some(1) => Seq::EraseInLine(EraseInLine::Left),
+                        Some(2) => Seq::EraseInLine(EraseInLine::All),
+                        _       => Seq::EraseInLine(EraseInLine::Right),
+                    }),
                     b'H' => {
-                        let row = buf_next_int!(self, usize).unwrap_or(1);
-                        let col = buf_next_int!(self, usize).unwrap_or(1);
+                        let mut int_buf = Buffer::new(&buf!(start));
 
-                        self.buf.truncate(0);
+                        let row = cmp::max(1, int_buf.next::<usize>().unwrap_or(1));
+                        let col = cmp::max(1, int_buf.next::<usize>().unwrap_or(1));
 
-                        self.state = ParserState::Default;
-
-                        return Some(Ok(Seq::CursorPosition(row - 1, col - 1)));
+                        ret!(Seq::CursorPosition(row - 1, col - 1));
                     },
-                    c if c >= 0x40 && c <= 0x7E => {
-                        self.buf.push(c);
-
-                        unknown_csi!(self);
-                    },
-                    c => self.buf.push(c)
+                    c if c >= 0x40 && c <= 0x7E => err!(Error::ParseError(self.state, From::from(&buf!(start)))),
+                    _ => {} /* In buffer */
                 },
-                ParserState::CharAttr => {
-                    // No parameters equals CSI 0 m
-                    if self.buf.len() == 0 {
-                        self.buf.push(b'0');
+                ParserState::Charset(index) => match c {
+                    b'0' => ret!(Seq::Charset(index, Charset::DECSpecialAndLineDrawing)),
+                    b'<' => ret!(Seq::Charset(index, Charset::DECSupplementary)),
+                    b'>' => ret!(Seq::Charset(index, Charset::DECTechnical)),
+                    b'A' => ret!(Seq::Charset(index, Charset::UnitedKingdom)),
+                    b'B' => ret!(Seq::Charset(index, Charset::UnitedStates)),
+                    b'4' => ret!(Seq::Charset(index, Charset::Dutch)),
+                    b'C' => ret!(Seq::Charset(index, Charset::Finnish)),
+                    b'5' => ret!(Seq::Charset(index, Charset::Finnish)),
+                    b'R' => ret!(Seq::Charset(index, Charset::French)),
+                    b'f' => ret!(Seq::Charset(index, Charset::French)),
+                    b'Q' => ret!(Seq::Charset(index, Charset::FrenchCanadian)),
+                    b'9' => ret!(Seq::Charset(index, Charset::FrenchCanadian)),
+                    b'K' => ret!(Seq::Charset(index, Charset::German)),
+                    b'Y' => ret!(Seq::Charset(index, Charset::Italian)),
+                    b'`' => ret!(Seq::Charset(index, Charset::NorwegianDanish)),
+                    b'E' => ret!(Seq::Charset(index, Charset::NorwegianDanish)),
+                    b'6' => ret!(Seq::Charset(index, Charset::NorwegianDanish)),
+                    b'Z' => ret!(Seq::Charset(index, Charset::Spanish)),
+                    b'H' => ret!(Seq::Charset(index, Charset::Swedish)),
+                    b'7' => ret!(Seq::Charset(index, Charset::Swedish)),
+                    b'=' => ret!(Seq::Charset(index, Charset::Swiss)),
+                    b'%' => self.state = ParserState::CharsetSuppOrPortuguese(index),
+                    c    => err!(Error::UnknownCharset(c, None)),
+                },
+                ParserState::CharsetSuppOrPortuguese(index) => match c {
+                    b'5' => ret!(Seq::Charset(index, Charset::DECSupplementaryGraphics)),
+                    b'6' => ret!(Seq::Charset(index, Charset::Portuguese)),
+                    c    => err!(Error::UnknownCharset(b'%', Some(c))),
+                },
+                ParserState::OSC(start) => {
+                    // "ESC \" = "ST"
+                    // ie. 0x1B 0x5C => 0x07
+                    if c != 0x07 && (c != 0x5C && buffer.get(i - 1) != Some(&0x1B)) {
+                        // Not end of OSC (ST or ESC \)
+                        continue;
                     }
 
-                    let mut cpy = self.buf.clone();
-
-                    cpy.push(b'm');
-
-                    let r = match buf_next_int!(self, u8) {
-                        Some(0)              => Some(Ok(Seq::CharAttr(CharAttr::Reset))),
-                        Some(1)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Bold)))),
-                        Some(2)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Faint)))),
-                        Some(3)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Italicized)))),
-                        Some(4)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Underlined)))),
-                        Some(5)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Blink)))),
-                        Some(7)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Inverse)))),
-                        Some(8)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Invisible)))),
-                        Some(9)              => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::CrossedOut)))),
-                        Some(21)             => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::DoublyUnderlined)))),
-                        Some(22)             => Some(Ok(Seq::CharAttr(CharAttr::Set(CharType::Normal)))), /* Not bold, not faint */
-                        Some(23)             => Some(Ok(Seq::CharAttr(CharAttr::Unset(CharType::Italicized)))),
-                        Some(24)             => Some(Ok(Seq::CharAttr(CharAttr::Unset(CharType::Underlined)))),
-                        Some(25)             => Some(Ok(Seq::CharAttr(CharAttr::Unset(CharType::Blink)))),
-                        Some(27)             => Some(Ok(Seq::CharAttr(CharAttr::Unset(CharType::Inverse)))),
-                        Some(28)             => Some(Ok(Seq::CharAttr(CharAttr::Unset(CharType::Invisible)))),
-                        Some(29)             => Some(Ok(Seq::CharAttr(CharAttr::Unset(CharType::CrossedOut)))),
-                        Some(30) | Some(90)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Black)))),
-                        Some(31) | Some(91)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Red)))),
-                        Some(32) | Some(92)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Green)))),
-                        Some(33) | Some(93)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Yellow)))),
-                        Some(34) | Some(94)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Blue)))),
-                        Some(35) | Some(95)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Magenta)))),
-                        Some(36) | Some(96)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Cyan)))),
-                        Some(37) | Some(97)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::White)))),
-                        Some(39) | Some(99)  => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Default)))),
-                        Some(40) | Some(100) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Black)))),
-                        Some(41) | Some(101) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Red)))),
-                        Some(42) | Some(102) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Green)))),
-                        Some(43) | Some(103) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Yellow)))),
-                        Some(44) | Some(104) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Blue)))),
-                        Some(45) | Some(105) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Magenta)))),
-                        Some(46) | Some(106) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Cyan)))),
-                        Some(47) | Some(107) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::White)))),
-                        Some(49)             => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Default)))),
-                        Some(38)             => match (buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8)) {
-                            (Some(2), Some(r), Some(g), Some(b)) => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::RGB(r, g, b))))),
-                            (Some(5), Some(p), None, None)       => Some(Ok(Seq::CharAttr(CharAttr::FGColor(Color::Palette(p))))),
-                            _                                    => unknown_csi!(self, cpy)
-                        },
-                        Some(48)             => match (buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8), buf_next_int!(self, u8)) {
-                            (Some(2), Some(r), Some(g), Some(b)) => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::RGB(r, g, b))))),
-                            (Some(5), Some(p), None, None)       => Some(Ok(Seq::CharAttr(CharAttr::BGColor(Color::Palette(p))))),
-                            _                                    => unknown_csi!(self, cpy)
-                        },
-                        _ => {
-                            unknown_csi!(self, cpy);
-                        }
+                    let end = if c == 0x5C  {
+                        i - 1
+                    } else {
+                        i
                     };
 
-                    if self.buf.len() == 0 {
-                        self.state = ParserState::Default;
+                    let mut b = Buffer::new(&buffer[start..end]);
+
+                    // println!("{:?}", (buf!(start, end).get(0), buf!(start, end).get(1)));
+
+                    match b.next::<u8>() {
+                        Some(0) => ret!(Seq::SetWindowTitle(String::from_utf8_lossy(b.rest()).into_owned())), // And icon name
+                        Some(1) => ret!(Seq::SetIconName(String::from_utf8_lossy(b.rest()).into_owned())),
+                        Some(2) => ret!(Seq::SetWindowTitle(String::from_utf8_lossy(b.rest()).into_owned())),
+                        Some(3) => ret!(Seq::SetXProps(String::from_utf8_lossy(b.rest()).into_owned())),
+                        Some(4) => ret!(Seq::SetColorNumber(String::from_utf8_lossy(b.rest()).into_owned())),
+                        _       => err!(Error::ParseError(self.state, From::from(&buffer[start..end]))),
                     }
-
-                    return r;
-                },
-                ParserState::Charset(index) => match next_char!(self) {
-                    b'0' => return_reset!(self, Seq::Charset(index, Charset::DECSpecialAndLineDrawing)),
-                    b'<' => return_reset!(self, Seq::Charset(index, Charset::DECSupplementary)),
-                    b'>' => return_reset!(self, Seq::Charset(index, Charset::DECTechnical)),
-                    b'A' => return_reset!(self, Seq::Charset(index, Charset::UnitedKingdom)),
-                    b'B' => return_reset!(self, Seq::Charset(index, Charset::UnitedStates)),
-                    b'4' => return_reset!(self, Seq::Charset(index, Charset::Dutch)),
-                    b'C' => return_reset!(self, Seq::Charset(index, Charset::Finnish)),
-                    b'5' => return_reset!(self, Seq::Charset(index, Charset::Finnish)),
-                    b'R' => return_reset!(self, Seq::Charset(index, Charset::French)),
-                    b'f' => return_reset!(self, Seq::Charset(index, Charset::French)),
-                    b'Q' => return_reset!(self, Seq::Charset(index, Charset::FrenchCanadian)),
-                    b'9' => return_reset!(self, Seq::Charset(index, Charset::FrenchCanadian)),
-                    b'K' => return_reset!(self, Seq::Charset(index, Charset::German)),
-                    b'Y' => return_reset!(self, Seq::Charset(index, Charset::Italian)),
-                    b'`' => return_reset!(self, Seq::Charset(index, Charset::NorwegianDanish)),
-                    b'E' => return_reset!(self, Seq::Charset(index, Charset::NorwegianDanish)),
-                    b'6' => return_reset!(self, Seq::Charset(index, Charset::NorwegianDanish)),
-                    b'Z' => return_reset!(self, Seq::Charset(index, Charset::Spanish)),
-                    b'H' => return_reset!(self, Seq::Charset(index, Charset::Swedish)),
-                    b'7' => return_reset!(self, Seq::Charset(index, Charset::Swedish)),
-                    b'=' => return_reset!(self, Seq::Charset(index, Charset::Swiss)),
-                    b'%' => match next_char!(self) {
-                        b'5' => return_reset!(self, Seq::Charset(index, Charset::DECSupplementaryGraphics)),
-                        b'6' => return_reset!(self, Seq::Charset(index, Charset::Portuguese)),
-                        c    => {
-                            self.state = ParserState::Default;
-
-                            return Some(Err(Error::UnknownCharset(b'%', Some(c))));
-                        }
-                    },
-                    c => {
-                        self.state = ParserState::Default;
-
-                        return Some(Err(Error::UnknownCharset(c, None)));
-                    }
-                },
-                ParserState::OSC => match next_char!(self) {
-                    0x5C if self.buf.iter().last() == Some(&0x1B) => {
-                        /* Remove ESC */
-                        self.buf.pop();
-
-                        parse_osc!(self)
-                    },
-                    0x07 => parse_osc!(self),
-                    c    => self.buf.push(c)
                 }
             }
         }
+
+        None
     }
 }
 
-pub fn new_parser<T: io::Read>(r: T) -> Parser<T> {
-    Parser{
-        src:   r.bytes(),
-        state: ParserState::Default,
-        buf:   Vec::new(),
+struct Buffer<'a> {
+    buffer: &'a [u8],
+    cursor: usize,
+}
+
+impl<'a> Buffer<'a> {
+    fn new(buffer: &'a [u8]) -> Self {
+        Buffer {
+            buffer: buffer,
+            cursor: 0,
+        }
     }
+
+    /// Yields the next integer from the buffer.
+    fn next<T: str::FromStr>(&mut self) -> Option<T> {
+        if self.cursor >= self.buffer.len() {
+            return None
+        }
+
+        let partial = &self.buffer[self.cursor..];
+
+        parse_int::<T>(match partial.iter().position(|c| *c == b';') {
+            Some(p) => {
+                self.cursor = self.cursor + p + 1;
+
+                &partial[..p]
+            },
+            None => {
+                self.cursor = self.buffer.len();
+
+                partial
+            }
+        })
+    }
+
+    /// Yields the unparsed portion of the buffer
+    fn rest(&self) -> &[u8] {
+        &self.buffer[self.cursor..]
+    }
+
+    /// The number of used bytes of the buffer, includes trailing ';'.
+    fn used(&self) -> usize {
+        self.cursor
+    }
+}
+
+fn parse_int<T: str::FromStr>(buf: &[u8]) -> Option<T> {
+    unsafe {
+        // Should be ok for numbers
+        str::from_utf8_unchecked(buf)
+    }.parse::<T>().ok()
 }

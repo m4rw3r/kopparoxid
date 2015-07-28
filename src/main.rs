@@ -45,7 +45,7 @@ fn window(mut m: pty::Fd) {
     m.set_noblock();
 
     let mut out = m.clone();
-    let mut p   = ctrl::new_parser(io::BufReader::with_capacity(100, m));
+    let mut p   = io::BufReader::with_capacity(1000, m);
     let display = glutin::WindowBuilder::new()
         .with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (3, 3)))
         .build_glium()
@@ -86,23 +86,25 @@ fn window(mut m: pty::Fd) {
         while accumulator >= FIXED_TIME_STAMP {
             accumulator -= FIXED_TIME_STAMP;
 
-            // FIXME: Implement proper reusable parser instance
-            // Should preferably allow more reuse of allocated memory
-            let mut data = Vec::new();
+            let iter = ctrl::Parser::new(&mut p)/*.map(|i| {
+                println!("{:?}", i);
 
-            while let Some(i) = p.next() {
-                match i {
-                    Ok(c) => if let ctrl::Seq::SetWindowTitle(ref title) = c {
-                        display.get_window().map(|w| w.set_title(title));
-                    }
-                    else {
-                        data.push(c);
-                    },
-                    Err(err) => println!("{}", err),
+                i
+            })*/.filter_map(|i| match i {
+                Ok(ctrl::Seq::SetWindowTitle(ref title)) => {
+                    display.get_window().map(|w| w.set_title(title));
+
+                    None
+                },
+                Ok(c)    => Some(c),
+                Err(err) => {
+                    println!("{}", err);
+
+                    None
                 }
-            }
+            });
 
-            t.pump(data.into_iter());
+            t.pump(iter);
 
             for i in display.poll_events() {
                 match i {

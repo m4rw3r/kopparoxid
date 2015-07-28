@@ -3,7 +3,6 @@ use std::cmp;
 use std::fmt;
 use std::collections;
 use std::marker::PhantomData;
-use ctrl;
 use ft;
 
 /// The growth factor for the atlas.

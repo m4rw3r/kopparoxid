@@ -239,9 +239,13 @@ pub struct GlTerm<'a, F, R>
   where F: 'a + glium::backend::Facade, R: 'a + tex::GlyphRenderer<u8> {
     context:   Rc<glium::backend::Context>,
     glyphs:    tex::GlyphMap<'a, F, R>,
+    /// Vertex buffer for foreground text cells
     fg_buffer: Vec<tex::TexturedVertex>,
+    /// Vertex buffer for background cells
     bg_buffer: Vec<ColoredVertex>,
+    /// Shader for rendering foreground text
     fg_shader: glium::Program,
+    /// Shader for rendering background vertices
     bg_shader: glium::Program,
     /// Cellsize is the pixel-size of a cell
     cellsize:  (f32, f32),
@@ -341,19 +345,19 @@ impl<'a, F, R> GlTerm<'a, F, R>
 
         for (row, r) in t.data.iter().enumerate() {
             for (col, c) in r.iter().enumerate().filter(|&(_, c)| c.glyph != 0) {
-                let l   = offset.0 + col as f32 * cellsize.0 * scale.0;
-                let r   = l + cellsize.0 * scale.0;
-                let b   = offset.1 - (row + 1) as f32 * cellsize.1 * scale.1;
-                let t   = b + cellsize.1 * scale.1;
-                let rgb = c.get_bg();
+                let left   = offset.0 + col as f32 * cellsize.0 * scale.0;
+                let right  = left + cellsize.0 * scale.0;
+                let bottom = offset.1 - (row + 1) as f32 * cellsize.1 * scale.1;
+                let top    = bottom + cellsize.1 * scale.1;
+                let rgb    = c.get_bg();
 
-                self.bg_buffer.push(ColoredVertex { xy: [l, b], rgb: rgb });
-                self.bg_buffer.push(ColoredVertex { xy: [l, t], rgb: rgb });
-                self.bg_buffer.push(ColoredVertex { xy: [r, t], rgb: rgb });
+                self.bg_buffer.push(ColoredVertex { xy: [left,  bottom], rgb: rgb });
+                self.bg_buffer.push(ColoredVertex { xy: [left,  top],    rgb: rgb });
+                self.bg_buffer.push(ColoredVertex { xy: [right, top],    rgb: rgb });
 
-                self.bg_buffer.push(ColoredVertex { xy: [r, t], rgb: rgb });
-                self.bg_buffer.push(ColoredVertex { xy: [r, b], rgb: rgb });
-                self.bg_buffer.push(ColoredVertex { xy: [l, b], rgb: rgb });
+                self.bg_buffer.push(ColoredVertex { xy: [right, top],    rgb: rgb });
+                self.bg_buffer.push(ColoredVertex { xy: [right, bottom], rgb: rgb });
+                self.bg_buffer.push(ColoredVertex { xy: [left,  bottom], rgb: rgb });
             }
         }
     }
@@ -382,8 +386,8 @@ impl<'a, F, R> GlTerm<'a, F, R>
     /// Draws the terminal onto ``target``.
     /// 
     ///  * ``t`` is the terminal data to draw.
-    ///  * ``fb_dim`` is the framebuffer dimensions which is needed to avoid blurry text and/or
-    ///    stretching. 
+    ///  * ``fb_dim`` is the framebuffer dimensions in pixels which is needed to avoid blurry
+    ///    text and/or stretching. 
     ///  * ``offset`` is the gl-offset to render at.
     pub fn draw<T>(&mut self, target: &mut T, t: &Term, fb_dim: (u32, u32), offset: (f32, f32))
       where T: glium::Surface {
@@ -392,6 +396,7 @@ impl<'a, F, R> GlTerm<'a, F, R>
         use glium::draw_parameters::LinearBlendingFactor;
 
         let indices = index::NoIndices(index::PrimitiveType::TrianglesList);
+        // This assumes that the framebuffer coordinates are [-1, -1] to [1, 1]
         let scale   = (2.0 / fb_dim.0 as f32, 2.0 / fb_dim.1 as f32);
 
         self.load_glyphs(t);
