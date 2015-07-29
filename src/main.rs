@@ -7,9 +7,10 @@ extern crate glium;
 extern crate freetype as ft;
 
 mod ctrl;
+mod parser;
 mod pty;
-mod tex;
 mod term;
+mod tex;
 
 fn main() {
     use libc;
@@ -75,7 +76,7 @@ fn window(mut m: pty::Fd) {
 
     t.resize(((prev_bufsize.0 / c_width) as usize, (prev_bufsize.1 / c_height) as usize));
 
-    let mut buf = ctrl::Buffer::new(m, 128, 1024);
+    let mut buf = parser::Buffer::new(m, 128, 1024);
 
     loop {
         let now = clock_ticks::precise_time_ns();
@@ -93,13 +94,13 @@ fn window(mut m: pty::Fd) {
 
                 i
             })*/.filter_map(|i| match i {
-                ctrl::Result::Data(ctrl::Seq::SetWindowTitle(ref title)) => {
+                parser::Result::Data(ctrl::Seq::SetWindowTitle(ref title)) => {
                     display.get_window().map(|w| w.set_title(title));
 
                     None
                 },
-                ctrl::Result::Data(c)    => Some(c),
-                ctrl::Result::Error(err) => {
+                parser::Result::Data(c)    => Some(c),
+                parser::Result::Error(err) => {
                     println!("{}", err);
 
                     None

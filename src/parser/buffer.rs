@@ -1,27 +1,12 @@
 use std::io;
 use std::iter;
-use std::str;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Parsed<T, E> {
-    /// Produced data from the parser, with number of consumed bytes first.
-    Data(usize, T),
-    /// Error during parsing, with number of consumed bytes first.
-    Error(usize, E),
-    /// Parser requires more data before being able to produce a result.
-    Incomplete,
-}
+use super::Parsed;
 
 pub enum Result<T, E> {
     Data(T),
     Error(E),
 }
-
-type Parser<'a, T: 'a, E: 'a> = Fn(&'a [u8]) -> Parsed<T, E>;
-
-/*trait Parser<'a, 'b, T: 'b, E: 'b> {
-    fn parse(&'a mut self, input: &'b [u8]) -> Result<T, E>;
-}*/
 
 /// A buffer which is always attempting to keep at least a certain
 /// amount of bytes in memory if available from the underlying source.
@@ -35,7 +20,7 @@ pub struct Buffer<T: io::Read> {
     /// Internal buffer
     buffer: Vec<u8>,
     /// The requested amount of bytes to be available for reading from the buffer
-    req:    usize,
+    chunk:  usize,
     /// The number of bytes from the start of the buffer which has been consumed
     used:   usize,
     /// The number of bytes from the start of the buffer which have been populated
@@ -43,10 +28,10 @@ pub struct Buffer<T: io::Read> {
 }
 
 impl<T: io::Read> Buffer<T> {
-    /// Creates a new buffer with the given ``reqsize`` and ``bufsize``
-    pub fn new(source: T, reqsize: usize, bufsize: usize) -> Self {
+    /// Creates a new buffer with the given ``chunksize`` and ``bufsize``
+    pub fn new(source: T, chunksize: usize, bufsize: usize) -> Self {
         // TODO: Error
-        assert!(reqsize < bufsize);
+        assert!(chunksize < bufsize);
 
         let mut buffer = Vec::with_capacity(bufsize);
 
@@ -56,7 +41,7 @@ impl<T: io::Read> Buffer<T> {
         Buffer {
             source: source,
             buffer: buffer,
-            req:    reqsize,
+            chunk:  chunksize,
             used:   0,
             size:   0,
         }
@@ -93,11 +78,11 @@ impl<T: io::Read> Buffer<T> {
     pub fn fill(&mut self) -> io::Result<usize> {
         let mut read = 0;
 
-        if self.size < self.used + self.req {
+        if self.size < self.used + self.chunk {
             self.drop_used();
         }
 
-        if self.size < self.req {
+        if self.size < self.chunk {
             read = try!(self.source.read(&mut self.buffer[self.size..]));
 
             self.size = self.size + read;
@@ -150,57 +135,4 @@ impl<'a, T: 'a + io::Read, P, R, E> Iterator for ParserIter<'a, T, P>
             Parsed::Incomplete => None
         }
     }
-}
-
-pub struct Window<'a> {
-    buffer: &'a [u8],
-    cursor: usize,
-}
-
-impl<'a> Window<'a> {
-    pub fn new(buffer: &'a [u8]) -> Self {
-        Window {
-            buffer: buffer,
-            cursor: 0,
-        }
-    }
-
-    /// Yields the next integer from the buffer.
-    pub fn next<T: str::FromStr>(&mut self) -> Option<T> {
-        if self.cursor >= self.buffer.len() {
-            return None
-        }
-
-        let partial = &self.buffer[self.cursor..];
-
-        parse_int::<T>(match partial.iter().position(|c| *c == b';') {
-            Some(p) => {
-                self.cursor = self.cursor + p + 1;
-
-                &partial[..p]
-            },
-            None => {
-                self.cursor = self.buffer.len();
-
-                partial
-            }
-        })
-    }
-
-    /// Yields the unparsed portion of the buffer
-    pub fn rest(&self) -> &[u8] {
-        &self.buffer[self.cursor..]
-    }
-
-    /// The number of used bytes of the buffer, includes trailing ';'.
-    pub fn used(&self) -> usize {
-        self.cursor
-    }
-}
-
-pub fn parse_int<T: str::FromStr>(buf: &[u8]) -> Option<T> {
-    unsafe {
-        // Should be ok for numbers
-        str::from_utf8_unchecked(buf)
-    }.parse::<T>().ok()
 }

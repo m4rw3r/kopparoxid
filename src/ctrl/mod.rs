@@ -1,14 +1,12 @@
 use std::fmt;
 use std::cmp;
+use std::str;
 
 mod sequences;
-mod buffer;
 
 pub use self::sequences::{Seq, KeypadMode, EraseInLine, EraseInDisplay, CharType, CharAttr, Color, Charset, CharsetIndex};
-pub use self::buffer::Buffer;
-pub use self::buffer::Result;
 
-use self::buffer::{Parsed, Window, parse_int};
+use ::parser::Parsed;
 
 static UTF8_TRAILING: [u8; 256] = [
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -262,7 +260,7 @@ fn parse_char_attr(buffer: &[u8]) -> Parsed<CharAttr, Error> {
     use self::CharType::*;
     use self::Color::*;
 
-    let mut int_buf = buffer::Window::new(buffer);
+    let mut int_buf = Window::new(buffer);
 
     macro_rules! ret { ( $ret:expr ) => ( Parsed::Data(int_buf.used(), $ret) ) };
     macro_rules! err { ( $ret:expr ) => ( Parsed::Error(int_buf.used(), $ret) ) };
@@ -329,4 +327,57 @@ fn parse_char_attr(buffer: &[u8]) -> Parsed<CharAttr, Error> {
         },
         _ => err!(Error::CharAttrError),
     }
+}
+
+pub struct Window<'a> {
+    buffer: &'a [u8],
+    cursor: usize,
+}
+
+impl<'a> Window<'a> {
+    pub fn new(buffer: &'a [u8]) -> Self {
+        Window {
+            buffer: buffer,
+            cursor: 0,
+        }
+    }
+
+    /// Yields the next integer from the buffer.
+    pub fn next<T: str::FromStr>(&mut self) -> Option<T> {
+        if self.cursor >= self.buffer.len() {
+            return None
+        }
+
+        let partial = &self.buffer[self.cursor..];
+
+        parse_int::<T>(match partial.iter().position(|c| *c == b';') {
+            Some(p) => {
+                self.cursor = self.cursor + p + 1;
+
+                &partial[..p]
+            },
+            None => {
+                self.cursor = self.buffer.len();
+
+                partial
+            }
+        })
+    }
+
+    /// Yields the unparsed portion of the buffer
+    pub fn rest(&self) -> &[u8] {
+        &self.buffer[self.cursor..]
+    }
+
+    /// The number of used bytes of the buffer, includes trailing ';'.
+    pub fn used(&self) -> usize {
+        self.cursor
+    }
+}
+
+pub fn parse_int<T: str::FromStr>(buf: &[u8]) -> Option<T> {
+    unsafe {
+        // Should be ok for numbers
+        str::from_utf8_unchecked(buf)
+    }.parse::<T>().ok()
 }
