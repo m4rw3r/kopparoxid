@@ -37,7 +37,6 @@ const FONT_SIZE:   u32 = 16;
 
 fn window(mut m: pty::Fd) {
     use clock_ticks;
-    use std::io;
     use std::process;
     use std::thread;
     use glium::DisplayBuild;
@@ -45,7 +44,6 @@ fn window(mut m: pty::Fd) {
     m.set_noblock();
 
     let mut out = m.clone();
-    let mut p   = io::BufReader::with_capacity(1000, m);
     let display = glutin::WindowBuilder::new()
         .with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (3, 3)))
         .build_glium()
@@ -59,7 +57,7 @@ fn window(mut m: pty::Fd) {
     let ft_metrics = ft_face.size_metrics().expect("Could not load size metrics from font face");
     let c_width    = (ft_to_pixels(ft_metrics.max_advance) + 1) as u32;
     let c_height   = (ft_to_pixels(ft_metrics.height) + 1) as u32;
-    
+
     println!("character height: {}, width: {}", c_height, c_width);
 
     let glyph_renderer = tex::FTGlyphRenderer::new(ft_face, tex::FTRenderMode::Greyscale);
@@ -77,6 +75,8 @@ fn window(mut m: pty::Fd) {
 
     t.resize(((prev_bufsize.0 / c_width) as usize, (prev_bufsize.1 / c_height) as usize));
 
+    let mut buf = ctrl::Buffer::new(m, 128, 1024);
+
     loop {
         let now = clock_ticks::precise_time_ns();
         accumulator += now - previous_clock;
@@ -86,7 +86,9 @@ fn window(mut m: pty::Fd) {
         while accumulator >= FIXED_TIME_STAMP {
             accumulator -= FIXED_TIME_STAMP;
 
-            let iter = ctrl::Parser::new(&mut p)/*.map(|i| {
+            buf.fill().unwrap();
+
+            let iter = ctrl::Parser::new(&mut buf)/*.map(|i| {
                 println!("{:?}", i);
 
                 i
