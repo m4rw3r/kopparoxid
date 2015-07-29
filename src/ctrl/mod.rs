@@ -30,7 +30,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Error::ParseError(state, ref data) => write!(f, "Unknown sequence found in state {:?}: {}", state, unsafe { String::from_utf8_unchecked(data.clone()) }),
+            Error::ParseError(state, ref data) => write!(f, "Unknown sequence found in state {:?}: {:?}", state, String::from_utf8_lossy(data)),
             Error::UnknownCharset(c, None)     => write!(f, "Unknown charset sequence: {:?}", c),
             Error::UnknownCharset(c, Some(d))  => write!(f, "Unknown charset sequence: {:?} {:?}", c, d),
             Error::UnknownEscapeChar(c)        => write!(f, "Unknown escape character: {:?}", c),
@@ -59,6 +59,7 @@ pub fn parser(buffer: &[u8]) -> Parsed<Seq, Error> {
         macro_rules! ret { ( $ret:expr ) => ( return Parsed::Data(i + 1, $ret) ) };
         // Yields an error, consuming data
         macro_rules! err { ( $err:expr ) => ( return Parsed::Error(i + 1, $err) ) };
+        macro_rules! parse_err { () => { return Parsed::Error(i + 1, Error::ParseError(state, From::from(&buffer[..i + 1]))) } };
 
         macro_rules! buf { ( $start:expr ) => (buffer[$start..i]); };
 
@@ -149,7 +150,7 @@ pub fn parser(buffer: &[u8]) -> Parsed<Seq, Error> {
 
                     ret!(Seq::CursorPosition(row - 1, col - 1));
                 },
-                c if c >= 0x40 && c <= 0x7E => err!(Error::ParseError(state, From::from(&buf!(start)))),
+                c if c >= 0x40 && c <= 0x7E => parse_err!(),
                 _ => {} /* In buffer */
             },
             ParserState::Charset(index) => match c {
@@ -204,7 +205,7 @@ pub fn parser(buffer: &[u8]) -> Parsed<Seq, Error> {
                     Some(2) => ret!(Seq::SetWindowTitle(String::from_utf8_lossy(b.rest()).into_owned())),
                     Some(3) => ret!(Seq::SetXProps(String::from_utf8_lossy(b.rest()).into_owned())),
                     Some(4) => ret!(Seq::SetColorNumber(String::from_utf8_lossy(b.rest()).into_owned())),
-                    _       => err!(Error::ParseError(state, From::from(&buffer[start..end]))),
+                    _       => parse_err!(),
                 }
             }
         }
