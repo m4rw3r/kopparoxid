@@ -203,11 +203,20 @@ impl Term {
             match i {
                 SetWindowTitle(_) => {},
                 Unicode(c)                           => self.put_char(c as usize),
-                CharAttr(FGColor(c)) => self.set_fg(c),
-                CharAttr(BGColor(c)) => self.set_bg(c),
-                CharAttr(Reset)      => {
-                    self.set_fg(Color::Default);
-                    self.set_bg(Color::Default);
+                CharAttr(list) => {
+                    for a in list {
+                        match a {
+                            Reset      => {
+                                self.set_fg(Color::Default);
+                                self.set_bg(Color::Default);
+                            },
+                            FGColor(c) => self.set_fg(c),
+                            BGColor(c) => self.set_bg(c),
+                            _          => {
+                                println!("Unknown char attr: {:?}", a);
+                            },
+                        }
+                    }
                 },
                 EraseInDisplay(ctrl::EraseInDisplay::Below) => self.erase_in_display_below(),
                 EraseInLine(ctrl::EraseInLine::Right)       => self.erase_in_line_right(),
@@ -218,7 +227,9 @@ impl Term {
                     self.set_pos_diff((0, 1));
                     self.set_pos_col(0)
                 },
-                _                                                      => {} // println!("> {:?}", i)
+                _                                           => {
+                    println!("Unknown seq: {:?}", i);
+                },
             }
         }
     }

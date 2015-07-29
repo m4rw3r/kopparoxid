@@ -88,22 +88,22 @@ fn window(mut m: pty::Fd) {
 
             buf.fill().unwrap();
 
-            let iter = ctrl::Parser::new(&mut buf)/*.map(|i| {
+            let iter = buf.iter_buf(ctrl::parser)/*.map(|i| {
                 println!("{:?}", i);
 
                 i
             })*/.filter_map(|i| match i {
-                Ok(ctrl::Seq::SetWindowTitle(ref title)) => {
+                ctrl::Result::Data(ctrl::Seq::SetWindowTitle(ref title)) => {
                     display.get_window().map(|w| w.set_title(title));
 
                     None
                 },
-                Ok(c)    => Some(c),
-                Err(err) => {
+                ctrl::Result::Data(c)    => Some(c),
+                ctrl::Result::Error(err) => {
                     println!("{}", err);
 
                     None
-                }
+                },
             });
 
             t.pump(iter);

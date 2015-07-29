@@ -24,7 +24,7 @@ impl Fd {
             }
         }
     }
-    
+
     pub fn set_noblock(&mut self) {
         unsafe {
             match libc::fcntl(self.fd, libc::F_SETFL, libc::fcntl(self.fd, libc::F_GETFL) | libc::O_NONBLOCK) {
@@ -68,7 +68,7 @@ impl io::Write for Fd {
             }
         }
     }
-    
+
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
@@ -79,7 +79,7 @@ impl io::Write for Fd {
 pub fn open() -> io::Result<(Fd, Fd)> {
     let mut m: libc::c_int = 0;
     let mut s: libc::c_int = 0;
-    
+
     unsafe {
         match openpty(&mut m, &mut s, ptr::null(), ptr::null(), ptr::null()) {
             -1 => Err(io::Error::last_os_error()),
@@ -92,32 +92,32 @@ fn execvp(cmd: &str, params: &[&str]) -> io::Error {
     use libc::execvp;
     use std::ffi::CString;
     use std::ptr;
-    
+
     let cmd      = CString::new(cmd).unwrap();
     let mut args = params.iter().map(|&s| CString::new(s).unwrap().as_ptr()).collect::<Vec<*const i8>>();
-    
+
     args.push(ptr::null());
-    
+
     unsafe {
         execvp(cmd.as_ptr(), args.as_mut_ptr());
     }
-    
+
     io::Error::last_os_error()
 }
 
 pub fn run_sh(m: Fd, s: Fd) -> ! {
     use libc;
     use std::process;
-    
+
     /* Get rid of the master fd before running the shell */
     drop(m);
-    
+
     s.override_fd(libc::STDIN_FILENO).unwrap();
     s.override_fd(libc::STDOUT_FILENO).unwrap();
     s.override_fd(libc::STDERR_FILENO).unwrap();
-    
+
     /* This will never return unless the shell command exits with error */
     print!("{}", execvp("zsh", &["-i"]));
-    
+
     process::exit(-1);
 }
