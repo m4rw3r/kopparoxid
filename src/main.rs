@@ -76,7 +76,7 @@ fn window(mut m: pty::Fd) {
 
     t.resize(((prev_bufsize.0 / c_width) as usize, (prev_bufsize.1 / c_height) as usize));
 
-    let mut buf = parser::Buffer::new(m, 128, 1024);
+    let mut buf = parser::Buffer::new(m, 1024, 4048);
 
     loop {
         let now = clock_ticks::precise_time_ns();
@@ -87,27 +87,31 @@ fn window(mut m: pty::Fd) {
         while accumulator >= FIXED_TIME_STAMP {
             accumulator -= FIXED_TIME_STAMP;
 
-            buf.fill().unwrap();
+            t.pump(buf.iter(ctrl::parser)
+                      .limit_bytes(100000)
+                      /*.map(|i| {
+                          println!("{:?}", i);
 
-            let iter = buf.iter_buf(ctrl::parser)/*.map(|i| {
-                println!("{:?}", i);
+                          i
+                      })*/
+                      .filter_map(|i| match i {
+                          parser::IterResult::Data(ctrl::Seq::SetWindowTitle(ref title)) => {
+                              display.get_window().map(|w| w.set_title(title));
 
-                i
-            })*/.filter_map(|i| match i {
-                parser::Result::Data(ctrl::Seq::SetWindowTitle(ref title)) => {
-                    display.get_window().map(|w| w.set_title(title));
+                              None
+                          },
+                          parser::IterResult::Data(c)    => Some(c),
+                          parser::IterResult::Error(err) => {
+                              println!("{}", err);
 
-                    None
-                },
-                parser::Result::Data(c)    => Some(c),
-                parser::Result::Error(err) => {
-                    println!("{}", err);
+                              None
+                          },
+                          parser::IterResult::IoError(err) => {
+                              println!("io: {}", err);
 
-                    None
-                },
-            });
-
-            t.pump(iter);
+                              None
+                          },
+                      }));
 
             for i in display.poll_events() {
                 match i {

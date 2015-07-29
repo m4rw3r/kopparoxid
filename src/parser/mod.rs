@@ -1,7 +1,7 @@
 mod buffer;
 
 pub use self::buffer::Buffer;
-pub use self::buffer::Result;
+pub use self::buffer::IterResult;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 /// This is the normal result of a parser.
