@@ -4,7 +4,17 @@ use std::str;
 
 mod sequences;
 
-pub use self::sequences::{Seq, KeypadMode, EraseInLine, EraseInDisplay, CharType, CharAttr, Color, Charset, CharsetIndex};
+pub use self::sequences::{
+    CharAttr,
+    CharType,
+    Charset,
+    CharsetIndex,
+    Color,
+    EraseInDisplay,
+    EraseInLine,
+    KeypadMode,
+    Seq,
+};
 
 use ::parser::Parsed;
 
@@ -20,9 +30,10 @@ static UTF8_TRAILING: [u8; 256] = [
 
 #[derive(Debug)]
 pub enum Error {
-    ParseError(ParserState, Vec<u8>),
     CharAttrError,
     UnknownCharset(u8, Option<u8>),
+    UnknownCSI(Vec<u8>),
+    UnknownOSC(Vec<u8>),
     UnknownEscapeChar(u8),
     UnexpectedUTF8Byte(u8),
 }
@@ -30,191 +41,203 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Error::ParseError(state, ref data) => write!(f, "Unknown sequence found in state {:?}: {:?}", state, String::from_utf8_lossy(data)),
-            Error::UnknownCharset(c, None)     => write!(f, "Unknown charset sequence: {:?}", c),
-            Error::UnknownCharset(c, Some(d))  => write!(f, "Unknown charset sequence: {:?} {:?}", c, d),
-            Error::UnknownEscapeChar(c)        => write!(f, "Unknown escape character: {:?}", c),
-            Error::UnexpectedUTF8Byte(b)       => write!(f, "Unexpected UTF8 byte: {:?}", b),
-            Error::CharAttrError               => write!(f, "Error parsing character attribute"),
+            Error::UnknownCSI(ref data)       => write!(f, "Unknown control sequence: {:?}", String::from_utf8_lossy(data)),
+            Error::UnknownOSC(ref data)       => write!(f, "Unknown operating system command: {:?}", String::from_utf8_lossy(data)),
+            Error::UnknownCharset(c, None)    => write!(f, "Unknown charset sequence: {:?}", c),
+            Error::UnknownCharset(c, Some(d)) => write!(f, "Unknown charset sequence: {:?} {:?}", c, d),
+            Error::UnknownEscapeChar(c)       => write!(f, "Unknown escape character: {:?}", c),
+            Error::UnexpectedUTF8Byte(b)      => write!(f, "Unexpected UTF8 byte: {:?}", b),
+            Error::CharAttrError              => write!(f, "Error parsing character attribute"),
         }
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ParserState {
-    Default,
-    ESC,
-    CSI(usize),
-    OSC(usize),
-    Charset(CharsetIndex),
-    CharsetSuppOrPortuguese(CharsetIndex),
-    Unicode(u32, u8),
+/// Attempts to parse characters or escape sequences from the given buffer.
+pub fn parser(buffer: &[u8]) -> Parsed<Seq, Error> {
+    match buffer.first() {
+        Some(&0x05) => Parsed::Data(1, Seq::ReturnTerminalStatus),
+        Some(&0x07) => Parsed::Data(1, Seq::Bell),
+        Some(&0x08) => Parsed::Data(1, Seq::Backspace),
+        Some(&0x09) => Parsed::Data(1, Seq::Tab),
+        Some(&0x0A) => Parsed::Data(1, Seq::LineFeed),
+        Some(&0x0B) => Parsed::Data(1, Seq::TabVertical),
+        Some(&0x0C) => Parsed::Data(1, Seq::FormFeed),
+        Some(&0x0D) => Parsed::Data(1, Seq::CarriageReturn),
+        Some(&0x0E) => Parsed::Data(1, Seq::ShiftOut),
+        Some(&0x0F) => Parsed::Data(1, Seq::ShiftIn),
+
+        Some(&0x1B) => parse_esc(&buffer[1..]).inc_used(1),
+
+        Some(&c) if c > 127 => parse_multibyte(c, &buffer[1..]).inc_used(1),
+        Some(&c)            => Parsed::Data(1, Seq::Unicode(c as u32)),
+
+        None => Parsed::Incomplete,
+    }
 }
 
-pub fn parser(buffer: &[u8]) -> Parsed<Seq, Error> {
-    let mut state = ParserState::Default;
+#[inline]
+fn parse_esc(buffer: &[u8]) -> Parsed<Seq, Error> {
+    match buffer.first() {
+        Some(&b'D')  => Parsed::Data(1, Seq::Index), /* IND */
+        Some(&b'E')  => Parsed::Data(1, Seq::NextLine), /* NEL */
+        Some(&b'H')  => Parsed::Data(1, Seq::TabSet), /* HTS */
+        Some(&b'M')  => Parsed::Data(1, Seq::ReverseIndex), /* RI */
+        Some(&b'N')  => Parsed::Data(1, Seq::SingleShiftSelectG2CharSet), /* SS2 */
+        Some(&b'O')  => Parsed::Data(1, Seq::SingleShiftSelectG3CharSet), /* SS3 */
+        Some(&b'P')  => Parsed::Data(1, Seq::DeviceControlString), /* DCS */
+        Some(&b'V')  => Parsed::Data(1, Seq::StartOfGuardedArea), /* SPA */
+        Some(&b'W')  => Parsed::Data(1, Seq::EndOfGuardedArea), /* EPA */
+        Some(&b'X')  => Parsed::Data(1, Seq::StartOfString), /* SOS */
+        Some(&b'Z')  => Parsed::Data(1, Seq::ReturnTerminalId), /* DECID */
+        Some(&b'[')  => parse_csi(&buffer[1..]).inc_used(1),
+        Some(&b'\\') => Parsed::Data(1, Seq::StringTerminator), /* ST */
+        Some(&b']')  => parse_osc(&buffer[1..]).inc_used(1), /* OSC */
+        Some(&b'^')  => Parsed::Data(1, Seq::PrivacyMessage), /* PM */
+        Some(&b'_')  => Parsed::Data(1, Seq::ApplicationProgramCommand), /* APC */
 
+        Some(&b'>')  => Parsed::Data(1, Seq::SetKeypadMode(KeypadMode::Numeric)),
+        Some(&b'=')  => Parsed::Data(1, Seq::SetKeypadMode(KeypadMode::Application)),
+        Some(&b'(')  => parse_charset(CharsetIndex::G0, &buffer[1..]).inc_used(1),
+        Some(&b')')  => parse_charset(CharsetIndex::G1, &buffer[1..]).inc_used(1),
+        Some(&b'*')  => parse_charset(CharsetIndex::G2, &buffer[1..]).inc_used(1),
+        Some(&b'+')  => parse_charset(CharsetIndex::G3, &buffer[1..]).inc_used(1),
+
+        Some(&c)     => Parsed::Error(1, Error::UnknownEscapeChar(c)),
+
+        None         => Parsed::Incomplete,
+    }
+}
+
+/// Attempts to parse a control sequence
+fn parse_csi(buffer: &[u8]) -> Parsed<Seq, Error> {
     for (i, &c) in buffer.iter().enumerate() {
-        // Yields a value, consuming data
-        macro_rules! ret { ( $ret:expr ) => ( return Parsed::Data(i + 1, $ret) ) };
-        // Yields an error, consuming data
-        macro_rules! err { ( $err:expr ) => ( return Parsed::Error(i + 1, $err) ) };
-        macro_rules! parse_err { () => { return Parsed::Error(i + 1, Error::ParseError(state, From::from(&buffer[..i + 1]))) } };
+        match c {
+            // Color codes
+            // Multiple control sequences for color codes can be present in the same sequence.
 
-        macro_rules! buf { ( $start:expr ) => (buffer[$start..i]); };
+            // No parameters equals ``CSI 0 m`` which means Reset
+            b'm' => return multiple_w_default(&buffer[..i], parse_char_attr, CharAttr::Reset)
+                .map(|a| Seq::CharAttr(a))
+                .inc_used(1),
+            b'J' => return Parsed::Data(i + 1, match parse_int::<u8>(&buffer[..i]) {
+                Some(1) => Seq::EraseInDisplay(EraseInDisplay::Above),
+                Some(2) => Seq::EraseInDisplay(EraseInDisplay::All),
+                _       => Seq::EraseInDisplay(EraseInDisplay::Below),
+            }),
+            b'K' => return Parsed::Data(i + 1, match parse_int::<u8>(&buffer[..i]) {
+                Some(1) => Seq::EraseInLine(EraseInLine::Left),
+                Some(2) => Seq::EraseInLine(EraseInLine::All),
+                _       => Seq::EraseInLine(EraseInLine::Right),
+            }),
+            b'H' => return {
+                let mut int_buf = Window::new(&buffer[..i]);
 
-        match state {
-            ParserState::Default => match c {
-                0x05 => ret!(Seq::ReturnTerminalStatus),
-                0x07 => ret!(Seq::Bell),
-                0x08 => ret!(Seq::Backspace),
-                0x09 => ret!(Seq::Tab),
-                0x0A => ret!(Seq::LineFeed),
-                0x0B => ret!(Seq::TabVertical),
-                0x0C => ret!(Seq::FormFeed),
-                0x0D => ret!(Seq::CarriageReturn),
-                0x0E => ret!(Seq::ShiftOut),
-                0x0F => ret!(Seq::ShiftIn),
+                let row = cmp::max(1, int_buf.next::<usize>().unwrap_or(1));
+                let col = cmp::max(1, int_buf.next::<usize>().unwrap_or(1));
 
-                0x1B => state = ParserState::ESC,
-
-                c if c > 127 => {
-                    let tail = UTF8_TRAILING[c as usize];
-                    let chr  = (c as u32) & (0xff >> (tail + 2));
-
-                    state = ParserState::Unicode(chr, tail - 1)
-                },
-                c => ret!(Seq::Unicode(c as u32)),
+                Parsed::Data(i + 1, Seq::CursorPosition(row - 1, col - 1))
             },
-            ParserState::Unicode(chr, 0) => match c {
-                c if c > 127 => ret!(Seq::Unicode((chr << 6) + ((c as u32) & 0x3f))),
-                c => err!(Error::UnexpectedUTF8Byte(c))
-            },
-            ParserState::Unicode(chr, i) => match c {
-                c if c > 127 => state = ParserState::Unicode((chr << 6) + ((c as u32) & 0x3f), i - 1),
-                c => err!(Error::UnexpectedUTF8Byte(c))
-            },
-            ParserState::ESC => match c {
-                b'D' => ret!(Seq::Index), /* IND */
-                b'E' => ret!(Seq::NextLine), /* NEL */
-                b'H' => ret!(Seq::TabSet), /* HTS */
-                b'M' => ret!(Seq::ReverseIndex), /* RI */
-                b'N' => ret!(Seq::SingleShiftSelectG2CharSet), /* SS2 */
-                b'O' => ret!(Seq::SingleShiftSelectG3CharSet), /* SS3 */
-                b'P' => ret!(Seq::DeviceControlString), /* DCS */
-                b'V' => ret!(Seq::StartOfGuardedArea), /* SPA */
-                b'W' => ret!(Seq::EndOfGuardedArea), /* EPA */
-                b'X' => ret!(Seq::StartOfString), /* SOS */
-                b'Z' => ret!(Seq::ReturnTerminalId), /* DECID */
-                b'[' => state = ParserState::CSI(i + 1),
-                b'\\' => ret!(Seq::StringTerminator), /* ST */
-                b']' => state = ParserState::OSC(i + 1), /* OSC */
-                b'^' => ret!(Seq::PrivacyMessage), /* PM */
-                b'_' => ret!(Seq::ApplicationProgramCommand), /* APC */
-
-                b'>' => ret!(Seq::SetKeypadMode(KeypadMode::Numeric)),
-                b'=' => ret!(Seq::SetKeypadMode(KeypadMode::Application)),
-                b'(' => state = ParserState::Charset(CharsetIndex::G0),
-                b')' => state = ParserState::Charset(CharsetIndex::G1),
-                b'*' => state = ParserState::Charset(CharsetIndex::G2),
-                b'+' => state = ParserState::Charset(CharsetIndex::G3),
-
-                c => err!(Error::UnknownEscapeChar(c))
-                // Some(b" ") => match 
-            },
-            ParserState::CSI(start) => match c {
-                // Color codes
-                // Multiple control sequences for color codes can be present in the same sequence.
-
-                // No parameters equals ``CSI 0 m`` which means Reset
-                b'm' => match multiple_w_default(&buf!(start), parse_char_attr, CharAttr::Reset) {
-                    Parsed::Data(_, attrs) => ret!(Seq::CharAttr(attrs)),
-                    Parsed::Error(_, err)  => err!(err),
-                    Parsed::Incomplete     => unreachable!(),
-                },
-                b'J' => ret!(match parse_int::<u8>(&buf!(start)) {
-                    Some(1) => Seq::EraseInDisplay(EraseInDisplay::Above),
-                    Some(2) => Seq::EraseInDisplay(EraseInDisplay::All),
-                    _       => Seq::EraseInDisplay(EraseInDisplay::Below),
-                }),
-                b'K' => ret!(match parse_int::<u8>(&buf!(start)) {
-                    Some(1) => Seq::EraseInLine(EraseInLine::Left),
-                    Some(2) => Seq::EraseInLine(EraseInLine::All),
-                    _       => Seq::EraseInLine(EraseInLine::Right),
-                }),
-                b'H' => {
-                    let mut int_buf = Window::new(&buf!(start));
-
-                    let row = cmp::max(1, int_buf.next::<usize>().unwrap_or(1));
-                    let col = cmp::max(1, int_buf.next::<usize>().unwrap_or(1));
-
-                    ret!(Seq::CursorPosition(row - 1, col - 1));
-                },
-                c if c >= 0x40 && c <= 0x7E => parse_err!(),
-                _ => {} /* In buffer */
-            },
-            ParserState::Charset(index) => match c {
-                b'0' => ret!(Seq::Charset(index, Charset::DECSpecialAndLineDrawing)),
-                b'<' => ret!(Seq::Charset(index, Charset::DECSupplementary)),
-                b'>' => ret!(Seq::Charset(index, Charset::DECTechnical)),
-                b'A' => ret!(Seq::Charset(index, Charset::UnitedKingdom)),
-                b'B' => ret!(Seq::Charset(index, Charset::UnitedStates)),
-                b'4' => ret!(Seq::Charset(index, Charset::Dutch)),
-                b'C' => ret!(Seq::Charset(index, Charset::Finnish)),
-                b'5' => ret!(Seq::Charset(index, Charset::Finnish)),
-                b'R' => ret!(Seq::Charset(index, Charset::French)),
-                b'f' => ret!(Seq::Charset(index, Charset::French)),
-                b'Q' => ret!(Seq::Charset(index, Charset::FrenchCanadian)),
-                b'9' => ret!(Seq::Charset(index, Charset::FrenchCanadian)),
-                b'K' => ret!(Seq::Charset(index, Charset::German)),
-                b'Y' => ret!(Seq::Charset(index, Charset::Italian)),
-                b'`' => ret!(Seq::Charset(index, Charset::NorwegianDanish)),
-                b'E' => ret!(Seq::Charset(index, Charset::NorwegianDanish)),
-                b'6' => ret!(Seq::Charset(index, Charset::NorwegianDanish)),
-                b'Z' => ret!(Seq::Charset(index, Charset::Spanish)),
-                b'H' => ret!(Seq::Charset(index, Charset::Swedish)),
-                b'7' => ret!(Seq::Charset(index, Charset::Swedish)),
-                b'=' => ret!(Seq::Charset(index, Charset::Swiss)),
-                b'%' => state = ParserState::CharsetSuppOrPortuguese(index),
-                c    => err!(Error::UnknownCharset(c, None)),
-            },
-            ParserState::CharsetSuppOrPortuguese(index) => match c {
-                b'5' => ret!(Seq::Charset(index, Charset::DECSupplementaryGraphics)),
-                b'6' => ret!(Seq::Charset(index, Charset::Portuguese)),
-                c    => err!(Error::UnknownCharset(b'%', Some(c))),
-            },
-            ParserState::OSC(start) => {
-                // ``ESC \`` = ``ST``
-                // ie. 0x1B 0x5C => 0x07
-                if c != 0x07 && (c != 0x5C && buffer.get(i - 1) != Some(&0x1B)) {
-                    // Not end of OSC (ST or ESC \)
-                    continue;
-                }
-
-                let end = if c == 0x5C  {
-                    i - 1
-                } else {
-                    i
-                };
-
-                let mut b = Window::new(&buffer[start..end]);
-
-                match b.next::<u8>() {
-                    Some(0) => ret!(Seq::SetWindowTitle(String::from_utf8_lossy(b.rest()).into_owned())), // And icon name
-                    Some(1) => ret!(Seq::SetIconName(String::from_utf8_lossy(b.rest()).into_owned())),
-                    Some(2) => ret!(Seq::SetWindowTitle(String::from_utf8_lossy(b.rest()).into_owned())),
-                    Some(3) => ret!(Seq::SetXProps(String::from_utf8_lossy(b.rest()).into_owned())),
-                    Some(4) => ret!(Seq::SetColorNumber(String::from_utf8_lossy(b.rest()).into_owned())),
-                    _       => parse_err!(),
-                }
-            }
+            c if c >= 0x40 && c <= 0x7E =>
+                return Parsed::Error(i + 1, Error::UnknownCSI(From::from(&buffer[..i + 1]))),
+            _ => {} /* In buffer */
         }
     }
 
     Parsed::Incomplete
 }
 
+/// Attempts to parse an operating system command from the given buffer.
+fn parse_osc(buffer: &[u8]) -> Parsed<Seq, Error> {
+    for (i, &c) in buffer.iter().enumerate() {
+        // ``ESC \`` = ``ST``
+        // ie. 0x1B 0x5C => 0x07
+        if ! (c == 0x07 || i > 0 && (c == 0x5C && buffer.get(i - 1) == Some(&0x1B))) {
+            // Not end of OSC (ST or ESC \)
+            continue;
+        }
+
+        let end = if c == 0x5C  {
+            i - 1
+        } else {
+            i
+        };
+
+        let mut b = Window::new(&buffer[..end]);
+
+        return match b.next::<u8>() {
+            Some(0) => Parsed::Data(i + 1, Seq::SetWindowTitle(String::from_utf8_lossy(b.rest()).into_owned())), // And icon name
+            Some(1) => Parsed::Data(i + 1, Seq::SetIconName(String::from_utf8_lossy(b.rest()).into_owned())),
+            Some(2) => Parsed::Data(i + 1, Seq::SetWindowTitle(String::from_utf8_lossy(b.rest()).into_owned())),
+            Some(3) => Parsed::Data(i + 1, Seq::SetXProps(String::from_utf8_lossy(b.rest()).into_owned())),
+            Some(4) => Parsed::Data(i + 1, Seq::SetColorNumber(String::from_utf8_lossy(b.rest()).into_owned())),
+            _       => Parsed::Error(i + 1, Error::UnknownOSC(From::from(&buffer[..i + 1]))),
+        }
+    }
+
+    Parsed::Incomplete
+}
+
+fn parse_charset(index: CharsetIndex, buffer: &[u8]) -> Parsed<Seq, Error> {
+    match buffer.first() {
+        Some(&b'0') => Parsed::Data(1, Seq::Charset(index, Charset::DECSpecialAndLineDrawing)),
+        Some(&b'<') => Parsed::Data(1, Seq::Charset(index, Charset::DECSupplementary)),
+        Some(&b'>') => Parsed::Data(1, Seq::Charset(index, Charset::DECTechnical)),
+        Some(&b'A') => Parsed::Data(1, Seq::Charset(index, Charset::UnitedKingdom)),
+        Some(&b'B') => Parsed::Data(1, Seq::Charset(index, Charset::UnitedStates)),
+        Some(&b'4') => Parsed::Data(1, Seq::Charset(index, Charset::Dutch)),
+        Some(&b'C') => Parsed::Data(1, Seq::Charset(index, Charset::Finnish)),
+        Some(&b'5') => Parsed::Data(1, Seq::Charset(index, Charset::Finnish)),
+        Some(&b'R') => Parsed::Data(1, Seq::Charset(index, Charset::French)),
+        Some(&b'f') => Parsed::Data(1, Seq::Charset(index, Charset::French)),
+        Some(&b'Q') => Parsed::Data(1, Seq::Charset(index, Charset::FrenchCanadian)),
+        Some(&b'9') => Parsed::Data(1, Seq::Charset(index, Charset::FrenchCanadian)),
+        Some(&b'K') => Parsed::Data(1, Seq::Charset(index, Charset::German)),
+        Some(&b'Y') => Parsed::Data(1, Seq::Charset(index, Charset::Italian)),
+        Some(&b'`') => Parsed::Data(1, Seq::Charset(index, Charset::NorwegianDanish)),
+        Some(&b'E') => Parsed::Data(1, Seq::Charset(index, Charset::NorwegianDanish)),
+        Some(&b'6') => Parsed::Data(1, Seq::Charset(index, Charset::NorwegianDanish)),
+        Some(&b'Z') => Parsed::Data(1, Seq::Charset(index, Charset::Spanish)),
+        Some(&b'H') => Parsed::Data(1, Seq::Charset(index, Charset::Swedish)),
+        Some(&b'7') => Parsed::Data(1, Seq::Charset(index, Charset::Swedish)),
+        Some(&b'=') => Parsed::Data(1, Seq::Charset(index, Charset::Swiss)),
+        Some(&b'%') => match buffer.get(1) {
+            Some(&b'5') => Parsed::Data(2, Seq::Charset(index, Charset::DECSupplementaryGraphics)),
+            Some(&b'6') => Parsed::Data(2, Seq::Charset(index, Charset::Portuguese)),
+            Some(&c)    => Parsed::Error(2, Error::UnknownCharset(b'%', Some(c))),
+            None        => Parsed::Incomplete,
+        },
+        Some(&c) => Parsed::Error(1, Error::UnknownCharset(c, None)),
+        None     => Parsed::Incomplete,
+    }
+}
+
+/// Attempts to parse the continuation of a multibyte character (UTF-8).
+#[inline]
+fn parse_multibyte(c: u8, buffer: &[u8]) -> Parsed<Seq, Error> {
+    debug_assert!(c > 127);
+
+    let tail    = UTF8_TRAILING[c as usize];
+    let mut i   = 0;
+    let mut chr = (c as u32) & (0xff >> (tail + 2));
+
+    for &c in buffer.iter().take(tail as usize) {
+        if c <= 127 {
+            return Parsed::Error(i + 1, Error::UnexpectedUTF8Byte(c));
+        }
+
+        chr = (chr << 6) + ((c as u32) & 0x3f);
+        i   = i + 1;
+    }
+
+    if i == tail as usize {
+        Parsed::Data(tail as usize, Seq::Unicode(chr))
+    } else {
+        Parsed::Incomplete
+    }
+}
+
 /// Attempts to parse multiple items but if the buffer is empty will return the default
+#[inline]
 fn multiple_w_default<F, T, E>(buffer: &[u8], f: F, default: T) -> Parsed<Vec<T>, E>
   where F: Sized + Fn(&[u8]) -> Parsed<T, E> {
     if buffer.is_empty() {
@@ -229,6 +252,7 @@ fn multiple_w_default<F, T, E>(buffer: &[u8], f: F, default: T) -> Parsed<Vec<T>
 }
 
 /// Parses multiple occurrences of the item
+#[inline]
 fn multiple<F, T, E>(buffer: &[u8], f: F) -> Parsed<Vec<T>, E>
   where F: Sized + Fn(&[u8]) -> Parsed<T, E> {
     let mut cursor = 0;
