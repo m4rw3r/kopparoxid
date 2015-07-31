@@ -76,7 +76,7 @@ fn window(mut m: pty::Fd) {
 
     t.resize(((prev_bufsize.0 / c_width) as usize, (prev_bufsize.1 / c_height) as usize));
 
-    let mut buf = parser::Buffer::new(m, 1024, 4048);
+    let mut buf = parser::Buffer::new(m, 2048, 4096);
 
     loop {
         let now = clock_ticks::precise_time_ns();
@@ -89,28 +89,12 @@ fn window(mut m: pty::Fd) {
 
             t.pump(buf.iter(ctrl::parser)
                       .limit_bytes(100000)
-                      /*.map(|i| {
-                          println!("{:?}", i);
-
-                          i
-                      })*/
-                      .filter_map(|i| match i {
-                          parser::IterResult::Data(ctrl::Seq::SetWindowTitle(ref title)) => {
-                              display.get_window().map(|w| w.set_title(title));
-
-                              None
-                          },
-                          parser::IterResult::Data(c)    => Some(c),
-                          parser::IterResult::Error(err) => {
-                              println!("{}", err);
-
-                              None
-                          },
-                          parser::IterResult::IoError(err) => {
-                              println!("io: {}", err);
-
-                              None
-                          },
+                      // .inspect(|i| println!("{:?}", i))
+                      .inspect(|i| if let &parser::IterResult::Error(ref err)   = i { println!("Error: {}", err); })
+                      .inspect(|i| if let &parser::IterResult::IoError(ref err) = i { println!("IoError: {}", err); })
+                      .filter_map(|i| i.data())
+                      .inspect(|i| if let &ctrl::Seq::SetWindowTitle(ref title) = i {
+                          display.get_window().map(|w| w.set_title(title));
                       }));
 
             for i in display.poll_events() {

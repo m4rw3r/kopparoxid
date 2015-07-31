@@ -5,10 +5,22 @@ use std::io::BufRead;
 
 use super::Parsed;
 
+#[derive(Debug)]
 pub enum IterResult<T, E> {
     Data(T),
     Error(E),
     IoError(io::Error),
+}
+
+impl<T, E> IterResult<T, E> {
+    /// Yields the inner value of the ``Data`` variant, otherwise ``None``.
+    #[inline]
+    pub fn data(self) -> Option<T> {
+        match self {
+            IterResult::Data(d) => Some(d),
+            _                   => None,
+        }
+    }
 }
 
 /// A buffer which is always attempting to keep at least a certain
@@ -112,6 +124,14 @@ impl<T: io::Read> Buffer<T> {
         self.size - self.used
     }
 
+    /// Returns true if this buffer contains more than the given chunksize.
+    /// 
+    /// Checking this after attempting to drain the buffer using ``iter()`` or
+    /// ``iter_buf()`` can indicate the presence of a too long input.
+    pub fn has_chunk(&self) -> bool {
+        self.size - self.used > self.chunk
+    }
+
     /// Borrows the remainder of the buffer.
     pub fn buffer(&self) -> &[u8] {
         &self.buffer[self.used..self.size]
@@ -138,7 +158,7 @@ impl<T: io::Read> io::BufRead for Buffer<T> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         try!(self.fill());
 
-        Ok(&self.buffer[self.used..self.size])
+        Ok(self.buffer())
     }
 
     fn consume(&mut self, num: usize) {
@@ -146,6 +166,9 @@ impl<T: io::Read> io::BufRead for Buffer<T> {
     }
 }
 
+/// An iterator over parsed items from the buffer, calling ``Buffer::fill()`` when necessary.
+///
+/// Will return none when attempts to fill the buffer returns ``0``.
 struct ParserIter<'a, T: 'a + io::Read, P> {
     buffer: &'a mut Buffer<T>,
     parser: P,
@@ -205,6 +228,8 @@ impl<'a, T: 'a + io::Read, P, R, E> Iterator for ParserIter<'a, T, P>
     }
 }
 
+/// A version of the ``ParserIter`` which will only read a certain amount of bytes befre
+/// ending iteration.
 struct LimitedParserIter<'a, T: 'a + io::Read, P> {
     buffer:    &'a mut Buffer<T>,
     parser:    P,
@@ -255,6 +280,7 @@ impl<'a, T: 'a + io::Read, P, R, E> Iterator for LimitedParserIter<'a, T, P>
     }
 }
 
+/// An iterator over the buffer of a ``Buffer``, will not attempt to refill the buffer.
 struct ParserBufIter<'a, T: 'a + io::Read, P> {
     buffer: &'a mut Buffer<T>,
     parser: P,
