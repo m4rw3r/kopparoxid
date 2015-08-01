@@ -48,6 +48,16 @@ impl<T, E> Parsed<T, E> {
             Parsed::Incomplete  => Parsed::Incomplete,
         }
     }
+
+    #[inline]
+    pub fn map_err<F, U>(self, f: F) -> Parsed<T, U>
+      where F: FnOnce(E) -> U {
+        match self {
+            Parsed::Data(u, d)  => Parsed::Data(u, d),
+            Parsed::Error(u, e) => Parsed::Error(u, f(e)),
+            Parsed::Incomplete  => Parsed::Incomplete,
+        }
+    }
 }
 
 /// The type of a parser.

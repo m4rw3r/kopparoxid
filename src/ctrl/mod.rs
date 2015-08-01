@@ -118,6 +118,7 @@ fn parse_csi(buffer: &[u8]) -> Parsed<Seq, Error> {
             // No parameters equals ``CSI 0 m`` which means Reset
             b'm' => return multiple_w_default(&buffer[..i], parse_char_attr, CharAttr::Reset)
                 .map(|a| Seq::CharAttr(a))
+                .map_err(|_| Error::CharAttrError)
                 .inc_used(1),
             b'J' => return Parsed::Data(i + 1, match parse_int::<u8>(&buffer[..i]) {
                 Some(1) => Seq::EraseInDisplay(EraseInDisplay::Above),
@@ -130,6 +131,7 @@ fn parse_csi(buffer: &[u8]) -> Parsed<Seq, Error> {
                 _       => Seq::EraseInLine(EraseInLine::Right),
             }),
             b'H' => return {
+                // 1-indexed coordinates, row;col, defaults to 1 if not present.
                 let mut int_buf = Window::new(&buffer[..i]);
 
                 let row = cmp::max(1, int_buf.next::<usize>().unwrap_or(1));
@@ -280,7 +282,7 @@ fn multiple<F, T, E>(buffer: &[u8], f: F) -> Parsed<Vec<T>, E>
 /// Parses a single character attribute
 /// 
 /// Expects to receive data after the sequence ``ESC [`` but before ``m``.
-fn parse_char_attr(buffer: &[u8]) -> Parsed<CharAttr, Error> {
+fn parse_char_attr(buffer: &[u8]) -> Parsed<CharAttr, ()> {
     use self::CharAttr::*;
     use self::CharType::*;
     use self::Color::*;
@@ -288,7 +290,7 @@ fn parse_char_attr(buffer: &[u8]) -> Parsed<CharAttr, Error> {
     let mut int_buf = Window::new(buffer);
 
     macro_rules! ret { ( $ret:expr ) => ( Parsed::Data(int_buf.used(), $ret) ) };
-    macro_rules! err { ( $ret:expr ) => ( Parsed::Error(int_buf.used(), $ret) ) };
+    macro_rules! err { () => ( Parsed::Error(int_buf.used(), ()) ) };
 
     match int_buf.next::<u8>() {
         Some(0)              => ret!(Reset),
@@ -329,28 +331,28 @@ fn parse_char_attr(buffer: &[u8]) -> Parsed<CharAttr, Error> {
         Some(38)             => match int_buf.next::<u8>() {
             Some(2) => match (int_buf.next::<u8>(), int_buf.next::<u8>(), int_buf.next::<u8>()) {
                 (Some(r), Some(g), Some(b)) => ret!(FGColor(RGB(r, g, b))),
-                _                           => err!(Error::CharAttrError),
+                _                           => err!(),
             },
             Some(5) => if let Some(p) = int_buf.next::<u8>() {
                 ret!(FGColor(Palette(p)))
             } else {
-                err!(Error::CharAttrError)
+                err!()
             },
-            _ => err!(Error::CharAttrError),
+            _ => err!(),
         },
         Some(48) => match int_buf.next::<u8>() {
             Some(2) => match (int_buf.next::<u8>(), int_buf.next::<u8>(), int_buf.next::<u8>()) {
                 (Some(r), Some(g), Some(b)) => ret!(BGColor(RGB(r, g, b))),
-                _                           => err!(Error::CharAttrError),
+                _                           => err!(),
             },
             Some(5) => if let Some(p) = int_buf.next::<u8>() {
                 ret!(BGColor(Palette(p)))
             } else {
-                err!(Error::CharAttrError)
+                err!()
             },
-            _ => err!(Error::CharAttrError),
+            _ => err!(),
         },
-        _ => err!(Error::CharAttrError),
+        _ => err!(),
     }
 }
 
