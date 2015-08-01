@@ -15,6 +15,55 @@ pub enum Parsed<T, E> {
 }
 
 impl<T, E> Parsed<T, E> {
+    #[inline]
+    pub fn is_data(&self) -> bool {
+        match *self {
+            Parsed::Data(_, _) => true,
+            _                  => false,
+        }
+    }
+
+    #[inline]
+    pub fn is_error(&self) -> bool {
+        match *self {
+            Parsed::Error(_, _) => true,
+            _                   => false,
+        }
+    }
+
+    #[inline]
+    pub fn is_incomplete(&self) -> bool {
+        match *self {
+            Parsed::Incomplete => true,
+            _                  => false,
+        }
+    }
+
+    #[inline]
+    pub fn used(&self) -> usize {
+        match *self {
+            Parsed::Data(u, _)  => u,
+            Parsed::Error(u, _) => u,
+            Parsed::Incomplete  => 0,
+        }
+    }
+
+    #[inline]
+    pub fn data(self) -> Option<T> {
+        match self {
+            Parsed::Data(_, d) => Some(d),
+            _                  => None,
+        }
+    }
+
+    #[inline]
+    pub fn error(self) -> Option<E> {
+        match self {
+            Parsed::Error(_, err) => Some(err),
+            _                     => None,
+        }
+    }
+
     /// Increases the used value by the specified amount.
     /// 
     /// ```

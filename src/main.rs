@@ -10,11 +10,14 @@ mod ctrl;
 mod parser;
 mod pty;
 mod term;
-mod tex;
+mod gl;
+
+use gl::glyph;
+use std::io;
+use std::process;
+use std::thread;
 
 fn main() {
-    use libc;
-    use std::io;
 
     let (m, s) = pty::open().unwrap();
 
@@ -29,17 +32,10 @@ fn main() {
     }
 }
 
-/// Truncates a freetype 16.16 fixed-point values to the integer value.
-fn ft_to_pixels(fixed_float: i64) -> i32 {
-    (fixed_float >> 6) as i32
-}
-
 const FONT_SIZE:   u32 = 16;
 
 fn window(mut m: pty::Fd) {
-    use clock_ticks;
-    use std::process;
-    use std::thread;
+    use gl::glyph::Renderer;
     use glium::DisplayBuild;
 
     m.set_noblock();
@@ -50,21 +46,16 @@ fn window(mut m: pty::Fd) {
         .build_glium()
         .unwrap();
 
-    let ft_lib = ft::Library::init().unwrap();
+    let ft_lib  = ft::Library::init().unwrap();
     let ft_face = ft_lib.new_face("./DejaVuSansMono/DejaVu Sans Mono for Powerline.ttf", 0).unwrap();
 
     ft_face.set_pixel_sizes(0, FONT_SIZE).unwrap();
 
-    let ft_metrics = ft_face.size_metrics().expect("Could not load size metrics from font face");
-    let c_width    = (ft_to_pixels(ft_metrics.max_advance) + 1) as u32;
-    let c_height   = (ft_to_pixels(ft_metrics.height) + 1) as u32;
-
-    println!("character height: {}, width: {}", c_height, c_width);
-
-    let glyph_renderer = tex::FTGlyphRenderer::new(ft_face, tex::FTRenderMode::Greyscale);
+    let glyph_renderer = glyph::FreeType::new(ft_face, glyph::FreeTypeMode::Greyscale);
+    let cell           = glyph_renderer.cell_size();
 
     let mut t = term::Term::new_with_size((10, 10));
-    let mut g = term::GlTerm::new(&display, glyph_renderer).unwrap();
+    let mut g = gl::term::GlTerm::new(&display, glyph_renderer).unwrap();
 
     display.get_window().map(|w| w.set_title("Kopparoxid"));
 
@@ -74,7 +65,7 @@ fn window(mut m: pty::Fd) {
     let mut previous_clock = clock_ticks::precise_time_ns();
     let mut prev_bufsize   = display.get_framebuffer_dimensions();
 
-    t.resize(((prev_bufsize.0 / c_width) as usize, (prev_bufsize.1 / c_height) as usize));
+    t.resize(((prev_bufsize.0 / cell.0) as usize, (prev_bufsize.1 / cell.1) as usize));
 
     let mut buf = parser::Buffer::new(m, 2048, 4096);
 
@@ -119,7 +110,7 @@ fn window(mut m: pty::Fd) {
             if buf_size != prev_bufsize {
                 prev_bufsize = buf_size;
 
-                t.resize(((buf_size.0 / c_width) as usize, ((buf_size.1 / c_height) as usize)));
+                t.resize(((buf_size.0 / cell.0) as usize, ((buf_size.1 / cell.1) as usize)));
             }
 
             if t.is_dirty() {

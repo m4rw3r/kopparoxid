@@ -21,6 +21,24 @@ impl<T, E> IterResult<T, E> {
             _                   => None,
         }
     }
+
+    /// Yields the error value of the ``Error`` variant, otherwise ``None``.
+    #[inline]
+    pub fn error(self) -> Option<E> {
+        match self {
+            IterResult::Error(e) => Some(e),
+            _                    => None,
+        }
+    }
+
+    /// Yields the error value of the ``IoError`` variant, otherwise ``None``.
+    #[inline]
+    pub fn io_error(self) -> Option<io::Error> {
+        match self {
+            IterResult::IoError(e) => Some(e),
+            _                      => None,
+        }
+    }
 }
 
 /// A buffer which is always attempting to keep at least a certain
