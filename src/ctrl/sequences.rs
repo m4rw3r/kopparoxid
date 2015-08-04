@@ -1,5 +1,5 @@
 
-#[derive(Debug)]
+#[derive(Debug, Eq, Hash, PartialEq)]
 pub enum Seq {
     /* Single character functions */
     Bell,
@@ -35,6 +35,10 @@ pub enum Seq {
     SetKeypadMode(KeypadMode),
 
     /* CSI */
+    ModeSet(Vec<Mode>),
+    ModeReset(Vec<Mode>),
+    PrivateModeSet(Vec<PrivateMode>),
+    PrivateModeReset(Vec<PrivateMode>),
     CharAttr(Vec<CharAttr>),
     EraseInLine(EraseInLine),
     EraseInDisplay(EraseInDisplay),
@@ -47,27 +51,47 @@ pub enum Seq {
     SetColorNumber(String),
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum KeypadMode {
     Numeric,
     Application,
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+pub enum PrivateMode {
+    /// Application Cursor Keys (DECCKM).
+    ApplicationCursorKeys,
+    /// Represents an unknown PrivateMode
+    Unknown(u32),
+}
+
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+pub enum Mode {
+    /// AM
+    KeyboardAction,
+    /// IRM
+    Insert,
+    /// SRM
+    SendReceive,
+    /// LNM
+    AutomaticNewline,
+}
+
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum EraseInLine {
     Left,
     Right,
     All,
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum EraseInDisplay {
     Above,
     Below,
     All,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum CharType {
     Normal,
     Bold,
@@ -103,7 +127,7 @@ impl Default for Color {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum CharAttr {
     Reset,
     Set(CharType),
@@ -112,7 +136,7 @@ pub enum CharAttr {
     BGColor(Color),
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Charset {
     DECSpecialAndLineDrawing,
     DECSupplementary,
@@ -134,7 +158,7 @@ pub enum Charset {
     // Unicode,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum CharsetIndex {
     G0,
     G1,

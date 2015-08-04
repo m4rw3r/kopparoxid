@@ -13,6 +13,8 @@ pub use self::sequences::{
     EraseInDisplay,
     EraseInLine,
     KeypadMode,
+    Mode,
+    PrivateMode,
     Seq,
 };
 
@@ -35,19 +37,29 @@ pub enum Error {
     UnknownCSI(Vec<u8>),
     UnknownOSC(Vec<u8>),
     UnknownEscapeChar(u8),
+    UnknownSetReset(u32),
+    UnknownSetResetData(Vec<u8>),
+    UnknownPrivateSetReset(u32),
+    UnknownPrivateSetResetData(Vec<u8>),
     UnexpectedUTF8Byte(u8),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::Error::*;
+
         match *self {
-            Error::UnknownCSI(ref data)       => write!(f, "Unknown control sequence: {:?}", String::from_utf8_lossy(data)),
-            Error::UnknownOSC(ref data)       => write!(f, "Unknown operating system command: {:?}", String::from_utf8_lossy(data)),
-            Error::UnknownCharset(c, None)    => write!(f, "Unknown charset sequence: {:?}", c),
-            Error::UnknownCharset(c, Some(d)) => write!(f, "Unknown charset sequence: {:?} {:?}", c, d),
-            Error::UnknownEscapeChar(c)       => write!(f, "Unknown escape character: {:?}", c),
-            Error::UnexpectedUTF8Byte(b)      => write!(f, "Unexpected UTF8 byte: {:?}", b),
-            Error::CharAttrError              => write!(f, "Error parsing character attribute"),
+            UnknownCSI(ref data)              => write!(f, "Unknown control sequence: {:?}", String::from_utf8_lossy(data)),
+            UnknownOSC(ref data)              => write!(f, "Unknown operating system command: {:?}", String::from_utf8_lossy(data)),
+            UnknownCharset(c, None)           => write!(f, "Unknown charset sequence: {:?}", c),
+            UnknownCharset(c, Some(d))        => write!(f, "Unknown charset sequence: {:?} {:?}", c, d),
+            UnknownEscapeChar(c)              => write!(f, "Unknown escape character: {:?}", c),
+            UnknownSetReset(m)                => write!(f, "Unknown set/reset mode: {:?}", m),
+            UnknownPrivateSetReset(m)         => write!(f, "Unknown private set/reset mode: {:?}", m),
+            UnknownSetResetData(ref d)        => write!(f, "Unknown set/reset mode data: {:?}", String::from_utf8_lossy(d)),
+            UnknownPrivateSetResetData(ref d) => write!(f, "Unknown private set/reset mode data: {:?}", String::from_utf8_lossy(d)),
+            UnexpectedUTF8Byte(b)             => write!(f, "Unexpected UTF8 byte: {:?}", b),
+            CharAttrError                     => write!(f, "Error parsing character attribute"),
         }
     }
 }
@@ -110,8 +122,18 @@ fn parse_esc(buffer: &[u8]) -> Parsed<Seq, Error> {
 
 /// Attempts to parse a control sequence
 fn parse_csi(buffer: &[u8]) -> Parsed<Seq, Error> {
+    let mut private = false;
+
     for (i, &c) in buffer.iter().enumerate() {
         match c {
+            b'h' => return match private {
+                true  => multiple(&buffer[1..i], parse_private_mode).map(|a| Seq::PrivateModeSet(a)).inc_used(2),
+                false => multiple(&buffer[..i], parse_mode).map(|a| Seq::ModeSet(a)).inc_used(1),
+            },
+            b'l' => return match private {
+                true  => multiple(&buffer[1..i], parse_private_mode).map(|a| Seq::PrivateModeReset(a)).inc_used(2),
+                false => multiple(&buffer[..i], parse_mode).map(|a| Seq::ModeReset(a)).inc_used(1),
+            },
             // Color codes
             // Multiple control sequences for color codes can be present in the same sequence.
 
@@ -120,6 +142,15 @@ fn parse_csi(buffer: &[u8]) -> Parsed<Seq, Error> {
                 .map(|a| Seq::CharAttr(a))
                 .map_err(|_| Error::CharAttrError)
                 .inc_used(1),
+            b'H' => return {
+                // 1-indexed coordinates, row;col, defaults to 1 if not present.
+                let mut int_buf = Window::new(&buffer[..i]);
+
+                let row = cmp::max(1, int_buf.next::<usize>().unwrap_or(1));
+                let col = cmp::max(1, int_buf.next::<usize>().unwrap_or(1));
+
+                Parsed::Data(i + 1, Seq::CursorPosition(row - 1, col - 1))
+            },
             b'J' => return Parsed::Data(i + 1, match parse_int::<u8>(&buffer[..i]) {
                 Some(1) => Seq::EraseInDisplay(EraseInDisplay::Above),
                 Some(2) => Seq::EraseInDisplay(EraseInDisplay::All),
@@ -130,15 +161,7 @@ fn parse_csi(buffer: &[u8]) -> Parsed<Seq, Error> {
                 Some(2) => Seq::EraseInLine(EraseInLine::All),
                 _       => Seq::EraseInLine(EraseInLine::Right),
             }),
-            b'H' => return {
-                // 1-indexed coordinates, row;col, defaults to 1 if not present.
-                let mut int_buf = Window::new(&buffer[..i]);
-
-                let row = cmp::max(1, int_buf.next::<usize>().unwrap_or(1));
-                let col = cmp::max(1, int_buf.next::<usize>().unwrap_or(1));
-
-                Parsed::Data(i + 1, Seq::CursorPosition(row - 1, col - 1))
-            },
+            b'?' => private = true, /* In buffer, set private mode for mode-setters/resetters */
             c if c >= 0x40 && c <= 0x7E =>
                 return Parsed::Error(i + 1, Error::UnknownCSI(From::from(&buffer[..i + 1]))),
             _ => {} /* In buffer */
@@ -277,6 +300,43 @@ fn multiple<F, T, E>(buffer: &[u8], f: F) -> Parsed<Vec<T>, E>
     }
 
     Parsed::Data(cursor, items)
+}
+
+/// Parses a single mode attribute.
+/// 
+/// Expects to receive data after the sequences ``ESC [`` but before ``h`` or ``l``.
+fn parse_mode(buffer: &[u8]) -> Parsed<Mode, Error> {
+    use self::Mode::*;
+
+    let mut int_buf = Window::new(buffer);
+
+    macro_rules! ret { ( $ret:expr ) => ( Parsed::Data(int_buf.used(), $ret) ) };
+
+    match int_buf.next::<u32>() {
+        Some(2)  => ret!(KeyboardAction),
+        Some(4)  => ret!(Insert),
+        Some(12) => ret!(SendReceive),
+        Some(20) => ret!(AutomaticNewline),
+        Some(n)  => Parsed::Error(buffer.len(), Error::UnknownSetReset(n)),
+        None     => Parsed::Error(buffer.len(), Error::UnknownSetResetData(buffer.to_owned())),
+    }
+}
+
+/// Parses a single private mode attribute.
+/// 
+/// Expects to receive data after the sequences ``ESC [ ?`` but before ``h`` or ``l``.
+fn parse_private_mode(buffer: &[u8]) -> Parsed<PrivateMode, Error> {
+    use self::PrivateMode::*;
+
+    let mut int_buf = Window::new(buffer);
+
+    macro_rules! ret { ( $ret:expr ) => ( Parsed::Data(int_buf.used(), $ret) ) };
+
+    match int_buf.next::<u32>() {
+        Some(1) => ret!(ApplicationCursorKeys),
+        Some(n) => Parsed::Error(buffer.len(), Error::UnknownPrivateSetReset(n)),
+        None    => Parsed::Error(buffer.len(), Error::UnknownPrivateSetResetData(buffer.to_owned())),
+    }
 }
 
 /// Parses a single character attribute
