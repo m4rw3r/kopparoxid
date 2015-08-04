@@ -267,7 +267,7 @@ fn multiple<F, T, E>(buffer: &[u8], f: F) -> Parsed<Vec<T>, E>
 
                 items.push(item);
             },
-            Parsed::Error(consumed, err) => return Parsed::Error(consumed, err),
+            Parsed::Error(consumed, err) => return Parsed::Error(cursor + consumed, err),
             Parsed::Incomplete           => return Parsed::Incomplete,
         }
 
@@ -281,7 +281,8 @@ fn multiple<F, T, E>(buffer: &[u8], f: F) -> Parsed<Vec<T>, E>
 
 /// Parses a single character attribute
 /// 
-/// Expects to receive data after the sequence ``ESC [`` but before ``m``.
+/// Expects to receive data after the sequence ``ESC [`` but before ``m``,
+/// if a previous number has been read it expects to receive data after the following ``;``.
 fn parse_char_attr(buffer: &[u8]) -> Parsed<CharAttr, ()> {
     use self::CharAttr::*;
     use self::CharType::*;
@@ -290,7 +291,7 @@ fn parse_char_attr(buffer: &[u8]) -> Parsed<CharAttr, ()> {
     let mut int_buf = Window::new(buffer);
 
     macro_rules! ret { ( $ret:expr ) => ( Parsed::Data(int_buf.used(), $ret) ) };
-    macro_rules! err { () => ( Parsed::Error(int_buf.used(), ()) ) };
+    macro_rules! err { ()            => ( Parsed::Error(int_buf.used(), ()) ) };
 
     match int_buf.next::<u8>() {
         Some(0)              => ret!(Reset),
