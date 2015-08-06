@@ -35,14 +35,10 @@ pub enum Seq {
     SetKeypadMode(KeypadMode),
 
     /* CSI */
-    // TODO: Does this require a vector?
-    ModeSet(Vec<Mode>),
-    // TODO: Does this require a vector?
-    ModeReset(Vec<Mode>),
-    // TODO: Does this require a vector?
-    PrivateModeSet(Vec<PrivateMode>),
-    // TODO: Does this require a vector?
-    PrivateModeReset(Vec<PrivateMode>),
+    ModeSet(Mode),
+    ModeReset(Mode),
+    PrivateModeSet(PrivateMode),
+    PrivateModeReset(PrivateMode),
     CharAttr(Vec<CharAttr>),
     EraseInLine(EraseInLine),
     EraseInDisplay(EraseInDisplay),

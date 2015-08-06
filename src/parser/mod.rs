@@ -109,6 +109,34 @@ impl<T, E> Parsed<T, E> {
     }
 }
 
+pub trait ToParsed<T> {
+    type Error;
+
+    fn to_parsed(self, consumed: usize) -> Parsed<T, Self::Error>;
+}
+
+impl<T, U> ToParsed<T> for Result<T, U> {
+    type Error = U;
+
+    fn to_parsed(self, consumed: usize) -> Parsed<T, U> {
+        match self {
+            Ok(d)  => Parsed::Data(consumed, d),
+            Err(e) => Parsed::Error(consumed, e),
+        }
+    }
+}
+
+impl<T> ToParsed<T> for Option<T> {
+    type Error = ();
+
+    fn to_parsed(self, consumed: usize) -> Parsed<T, ()> {
+        match self {
+            Some(d) => Parsed::Data(consumed, d),
+            None    => Parsed::Error(consumed, ()),
+        }
+    }
+}
+
 /// The type of a parser.
 /// 
 /// Cannot currently be used it seems, use the generic ``<F, R, E> F: Sized + Fn(&'a [u8]) -> Parsed<R, E>``.

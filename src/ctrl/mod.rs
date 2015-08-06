@@ -1,6 +1,8 @@
+use std::error;
 use std::fmt;
 use std::cmp;
 use std::str;
+use std::num;
 
 mod sequences;
 
@@ -31,22 +33,23 @@ static UTF8_TRAILING: [u8; 256] = [
     2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3,4,4,4,4,5,5,5,5];
 
 #[derive(Debug)]
-pub enum Error {
+pub enum Err {
     CharAttrError,
     UnknownCharset(u8, Option<u8>),
     UnknownCSI(Vec<u8>),
     UnknownOSC(Vec<u8>),
     UnknownEscapeChar(u8),
-    UnknownSetReset(u32),
+    UnknownSetReset(usize),
     UnknownSetResetData(Vec<u8>),
-    UnknownPrivateSetReset(u32),
+    UnknownPrivateSetReset(usize),
     UnknownPrivateSetResetData(Vec<u8>),
+    IntParseError(num::ParseIntError),
     UnexpectedUTF8Byte(u8),
 }
 
-impl fmt::Display for Error {
+impl fmt::Display for Err {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use self::Error::*;
+        use self::Err::*;
 
         match *self {
             UnknownCSI(ref data)              => write!(f, "Unknown control sequence: {:?}", String::from_utf8_lossy(data)),
@@ -58,6 +61,7 @@ impl fmt::Display for Error {
             UnknownPrivateSetReset(m)         => write!(f, "Unknown private set/reset mode: {:?}", m),
             UnknownSetResetData(ref d)        => write!(f, "Unknown set/reset mode data: {:?}", String::from_utf8_lossy(d)),
             UnknownPrivateSetResetData(ref d) => write!(f, "Unknown private set/reset mode data: {:?}", String::from_utf8_lossy(d)),
+            IntParseError(ref e)              => fmt::Display::fmt(e, f),
             UnexpectedUTF8Byte(b)             => write!(f, "Unexpected UTF8 byte: {:?}", b),
             CharAttrError                     => write!(f, "Error parsing character attribute"),
         }
@@ -65,7 +69,7 @@ impl fmt::Display for Error {
 }
 
 /// Attempts to parse characters or escape sequences from the given buffer.
-pub fn parser(buffer: &[u8]) -> Parsed<Seq, Error> {
+pub fn parser(buffer: &[u8]) -> Parsed<Seq, Err> {
     match buffer.first() {
         Some(&0x05) => Parsed::Data(1, Seq::ReturnTerminalStatus),
         Some(&0x07) => Parsed::Data(1, Seq::Bell),
@@ -88,7 +92,7 @@ pub fn parser(buffer: &[u8]) -> Parsed<Seq, Error> {
 }
 
 #[inline]
-fn parse_esc(buffer: &[u8]) -> Parsed<Seq, Error> {
+fn parse_esc(buffer: &[u8]) -> Parsed<Seq, Err> {
     match buffer.first() {
         Some(&b'D')  => Parsed::Data(1, Seq::Index), /* IND */
         Some(&b'E')  => Parsed::Data(1, Seq::NextLine), /* NEL */
@@ -114,25 +118,27 @@ fn parse_esc(buffer: &[u8]) -> Parsed<Seq, Error> {
         Some(&b'*')  => parse_charset(CharsetIndex::G2, &buffer[1..]).inc_used(1),
         Some(&b'+')  => parse_charset(CharsetIndex::G3, &buffer[1..]).inc_used(1),
 
-        Some(&c)     => Parsed::Error(1, Error::UnknownEscapeChar(c)),
+        Some(&c)     => Parsed::Error(1, Err::UnknownEscapeChar(c)),
 
         None         => Parsed::Incomplete,
     }
 }
 
 /// Attempts to parse a control sequence
-fn parse_csi(buffer: &[u8]) -> Parsed<Seq, Error> {
+fn parse_csi(buffer: &[u8]) -> Parsed<Seq, Err> {
+    use parser::ToParsed;
+
     let mut private = false;
 
     for (i, &c) in buffer.iter().enumerate() {
         match c {
             b'h' => return match private {
-                true  => multiple(&buffer[1..i], parse_private_mode).map(|a| Seq::PrivateModeSet(a)).inc_used(2),
-                false => multiple(&buffer[..i], parse_mode).map(|a| Seq::ModeSet(a)).inc_used(1),
+                true  => parse_private_mode(&buffer[1..i]).map(|a| Seq::PrivateModeSet(a)).inc_used(2),
+                false => parse_mode(&buffer[..i]).map(|a| Seq::ModeSet(a)).inc_used(1),
             },
             b'l' => return match private {
-                true  => multiple(&buffer[1..i], parse_private_mode).map(|a| Seq::PrivateModeReset(a)).inc_used(2),
-                false => multiple(&buffer[..i], parse_mode).map(|a| Seq::ModeReset(a)).inc_used(1),
+                true  => parse_private_mode(&buffer[1..i]).map(|a| Seq::PrivateModeReset(a)).inc_used(2),
+                false => parse_mode(&buffer[..i]).map(|a| Seq::ModeReset(a)).inc_used(1),
             },
             // Color codes
             // Multiple control sequences for color codes can be present in the same sequence.
@@ -140,44 +146,44 @@ fn parse_csi(buffer: &[u8]) -> Parsed<Seq, Error> {
             // No parameters equals ``CSI 0 m`` which means Reset
             b'm' => return multiple_w_default(&buffer[..i], parse_char_attr, CharAttr::Reset)
                 .map(|a| Seq::CharAttr(a))
-                .map_err(|_| Error::CharAttrError)
+                .map_err(|_| Err::CharAttrError)
                 .inc_used(1),
-            b'n' => return match parse_int::<usize>(&buffer[..i]) {
-                Some(6) => Parsed::Data(i + 1, Seq::CursorPositionReport),
-                _       => Parsed::Error(i + 1, Error::UnknownCSI(From::from(&buffer[..i + 1]))),
+            b'n' => return match parse_int(&buffer[..i]) {
+                Ok(Some(6)) => Parsed::Data(i + 1, Seq::CursorPositionReport),
+                _           => Parsed::Error(i + 1, Err::UnknownCSI(From::from(&buffer[..i + 1]))),
             },
-            b'A' => return Parsed::Data(i + 1, Seq::CursorUp(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
-            b'B' => return Parsed::Data(i + 1, Seq::CursorDown(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
-            b'C' => return Parsed::Data(i + 1, Seq::CursorForward(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
-            b'D' => return Parsed::Data(i + 1, Seq::CursorBackward(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
-            b'E' => return Parsed::Data(i + 1, Seq::CursorNextLine(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
-            b'F' => return Parsed::Data(i + 1, Seq::CursorPreviousLine(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
-            b'G' => return Parsed::Data(i + 1, Seq::CursorHorizontalAbsolute(cmp::max(0, parse_int::<usize>(&buffer[..i]).unwrap_or(1)) - 1)),
+            b'A' => return parse_int(&buffer[..i]).map(|n| Seq::CursorUp(n.unwrap_or(1))).to_parsed(i + 1),
+            b'B' => return parse_int(&buffer[..i]).map(|n| Seq::CursorDown(n.unwrap_or(1))).to_parsed(i + 1),
+            b'C' => return parse_int(&buffer[..i]).map(|n| Seq::CursorForward(n.unwrap_or(1))).to_parsed(i + 1),
+            b'D' => return parse_int(&buffer[..i]).map(|n| Seq::CursorBackward(n.unwrap_or(1))).to_parsed(i + 1),
+            b'E' => return parse_int(&buffer[..i]).map(|n| Seq::CursorNextLine(n.unwrap_or(1))).to_parsed(i + 1),
+            b'F' => return parse_int(&buffer[..i]).map(|n| Seq::CursorPreviousLine(n.unwrap_or(1))).to_parsed(i + 1),
+            b'G' => return parse_int(&buffer[..i]).map(|n| Seq::CursorHorizontalAbsolute(cmp::max(1, n.unwrap_or(1)) - 1)).to_parsed(i + 1),
             b'H' => return {
                 // 1-indexed coordinates, row;col, defaults to 1 if not present.
                 let mut int_buf = Window::new(&buffer[..i]);
 
-                let row = cmp::max(1, int_buf.next::<usize>().unwrap_or(1));
-                let col = cmp::max(1, int_buf.next::<usize>().unwrap_or(1));
+                let row = cmp::max(1, int_buf.next().unwrap_or(1));
+                let col = cmp::max(1, int_buf.next().unwrap_or(1));
 
                 Parsed::Data(i + 1, Seq::CursorPosition(row - 1, col - 1))
             },
-            b'I' => return Parsed::Data(i + 1, Seq::CursorForwardTabulation(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
-            b'J' => return Parsed::Data(i + 1, match parse_int::<u8>(&buffer[..i]) {
-                Some(1) => Seq::EraseInDisplay(EraseInDisplay::Above),
-                Some(2) => Seq::EraseInDisplay(EraseInDisplay::All),
-                _       => Seq::EraseInDisplay(EraseInDisplay::Below),
+            b'I' => return parse_int(&buffer[..i]).map(|n| Seq::CursorForwardTabulation(n.unwrap_or(1))).to_parsed(i + 1),
+            b'J' => return Parsed::Data(i + 1, match parse_int(&buffer[..i]) {
+                Ok(Some(1)) => Seq::EraseInDisplay(EraseInDisplay::Above),
+                Ok(Some(2)) => Seq::EraseInDisplay(EraseInDisplay::All),
+                _           => Seq::EraseInDisplay(EraseInDisplay::Below),
             }),
-            b'K' => return Parsed::Data(i + 1, match parse_int::<u8>(&buffer[..i]) {
-                Some(1) => Seq::EraseInLine(EraseInLine::Left),
-                Some(2) => Seq::EraseInLine(EraseInLine::All),
-                _       => Seq::EraseInLine(EraseInLine::Right),
+            b'K' => return Parsed::Data(i + 1, match parse_int(&buffer[..i]) {
+                Ok(Some(1)) => Seq::EraseInLine(EraseInLine::Left),
+                Ok(Some(2)) => Seq::EraseInLine(EraseInLine::All),
+                _           => Seq::EraseInLine(EraseInLine::Right),
             }),
-            b'P' => return Parsed::Data(i + 1, Seq::DeleteCharacter(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
-            b'Z' => return Parsed::Data(i + 1, Seq::CursorBackwardsTabulation(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
+            b'P' => return parse_int(&buffer[..i]).map(|n| Seq::DeleteCharacter(n.unwrap_or(1))).to_parsed(i + 1),
+            b'Z' => return parse_int(&buffer[..i]).map(|n| Seq::CursorBackwardsTabulation(n.unwrap_or(1))).to_parsed(i + 1),
             b'?' => private = true, /* In buffer, set private mode for mode-setters/resetters */
             c if c >= 0x40 && c <= 0x7E =>
-                return Parsed::Error(i + 1, Error::UnknownCSI(From::from(&buffer[..i + 1]))),
+                return Parsed::Error(i + 1, Err::UnknownCSI(From::from(&buffer[..i + 1]))),
             _ => {} /* In buffer */
         }
     }
@@ -186,7 +192,7 @@ fn parse_csi(buffer: &[u8]) -> Parsed<Seq, Error> {
 }
 
 /// Attempts to parse an operating system command from the given buffer.
-fn parse_osc(buffer: &[u8]) -> Parsed<Seq, Error> {
+fn parse_osc(buffer: &[u8]) -> Parsed<Seq, Err> {
     for (i, &c) in buffer.iter().enumerate() {
         // ``ESC \`` = ``ST``
         // ie. 0x1B 0x5C => 0x07
@@ -203,20 +209,20 @@ fn parse_osc(buffer: &[u8]) -> Parsed<Seq, Error> {
 
         let mut b = Window::new(&buffer[..end]);
 
-        return match b.next::<u8>() {
+        return match b.next() {
             Some(0) => Parsed::Data(i + 1, Seq::SetWindowTitle(String::from_utf8_lossy(b.rest()).into_owned())), // And icon name
             Some(1) => Parsed::Data(i + 1, Seq::SetIconName(String::from_utf8_lossy(b.rest()).into_owned())),
             Some(2) => Parsed::Data(i + 1, Seq::SetWindowTitle(String::from_utf8_lossy(b.rest()).into_owned())),
             Some(3) => Parsed::Data(i + 1, Seq::SetXProps(String::from_utf8_lossy(b.rest()).into_owned())),
             Some(4) => Parsed::Data(i + 1, Seq::SetColorNumber(String::from_utf8_lossy(b.rest()).into_owned())),
-            _       => Parsed::Error(i + 1, Error::UnknownOSC(From::from(&buffer[..i + 1]))),
+            _       => Parsed::Error(i + 1, Err::UnknownOSC(From::from(&buffer[..i + 1]))),
         }
     }
 
     Parsed::Incomplete
 }
 
-fn parse_charset(index: CharsetIndex, buffer: &[u8]) -> Parsed<Seq, Error> {
+fn parse_charset(index: CharsetIndex, buffer: &[u8]) -> Parsed<Seq, Err> {
     match buffer.first() {
         Some(&b'0') => Parsed::Data(1, Seq::Charset(index, Charset::DECSpecialAndLineDrawing)),
         Some(&b'<') => Parsed::Data(1, Seq::Charset(index, Charset::DECSupplementary)),
@@ -242,17 +248,17 @@ fn parse_charset(index: CharsetIndex, buffer: &[u8]) -> Parsed<Seq, Error> {
         Some(&b'%') => match buffer.get(1) {
             Some(&b'5') => Parsed::Data(2, Seq::Charset(index, Charset::DECSupplementaryGraphics)),
             Some(&b'6') => Parsed::Data(2, Seq::Charset(index, Charset::Portuguese)),
-            Some(&c)    => Parsed::Error(2, Error::UnknownCharset(b'%', Some(c))),
+            Some(&c)    => Parsed::Error(2, Err::UnknownCharset(b'%', Some(c))),
             None        => Parsed::Incomplete,
         },
-        Some(&c) => Parsed::Error(1, Error::UnknownCharset(c, None)),
+        Some(&c) => Parsed::Error(1, Err::UnknownCharset(c, None)),
         None     => Parsed::Incomplete,
     }
 }
 
 /// Attempts to parse the continuation of a multibyte character (UTF-8).
 #[inline]
-fn parse_multibyte(c: u8, buffer: &[u8]) -> Parsed<Seq, Error> {
+fn parse_multibyte(c: u8, buffer: &[u8]) -> Parsed<Seq, Err> {
     debug_assert!(c > 127);
 
     let tail    = UTF8_TRAILING[c as usize];
@@ -261,7 +267,7 @@ fn parse_multibyte(c: u8, buffer: &[u8]) -> Parsed<Seq, Error> {
 
     for &c in buffer.iter().take(tail as usize) {
         if c <= 127 {
-            return Parsed::Error(i + 1, Error::UnexpectedUTF8Byte(c));
+            return Parsed::Error(i + 1, Err::UnexpectedUTF8Byte(c));
         }
 
         chr = (chr << 6) + ((c as u32) & 0x3f);
@@ -319,45 +325,41 @@ fn multiple<F, T, E>(buffer: &[u8], f: F) -> Parsed<Vec<T>, E>
 /// Parses a single mode attribute.
 /// 
 /// Expects to receive data after the sequences ``ESC [`` but before ``h`` or ``l``.
-fn parse_mode(buffer: &[u8]) -> Parsed<Mode, Error> {
+fn parse_mode(buffer: &[u8]) -> Parsed<Mode, Err> {
     use self::Mode::*;
 
-    let mut int_buf = Window::new(buffer);
+    macro_rules! ret { ( $ret:expr ) => ( Parsed::Data(buffer.len(), $ret) ) };
 
-    macro_rules! ret { ( $ret:expr ) => ( Parsed::Data(int_buf.used(), $ret) ) };
-
-    match int_buf.next::<u32>() {
-        Some(2)  => ret!(KeyboardAction),
-        Some(4)  => ret!(Insert),
-        Some(12) => ret!(SendReceive),
-        Some(20) => ret!(AutomaticNewline),
-        Some(n)  => Parsed::Error(buffer.len(), Error::UnknownSetReset(n)),
-        None     => Parsed::Error(buffer.len(), Error::UnknownSetResetData(buffer.to_owned())),
+    match parse_int(buffer) {
+        Ok(Some(2))  => ret!(KeyboardAction),
+        Ok(Some(4))  => ret!(Insert),
+        Ok(Some(12)) => ret!(SendReceive),
+        Ok(Some(20)) => ret!(AutomaticNewline),
+        Ok(Some(n))  => Parsed::Error(buffer.len(), Err::UnknownSetReset(n)),
+        _            => Parsed::Error(buffer.len(), Err::UnknownSetResetData(buffer.to_owned())),
     }
 }
 
 /// Parses a single private mode attribute.
 /// 
 /// Expects to receive data after the sequences ``ESC [ ?`` but before ``h`` or ``l``.
-fn parse_private_mode(buffer: &[u8]) -> Parsed<PrivateMode, Error> {
+fn parse_private_mode(buffer: &[u8]) -> Parsed<PrivateMode, Err> {
     use self::PrivateMode::*;
 
-    let mut int_buf = Window::new(buffer);
+    macro_rules! ret { ( $ret:expr ) => ( Parsed::Data(buffer.len(), $ret) ) };
 
-    macro_rules! ret { ( $ret:expr ) => ( Parsed::Data(int_buf.used(), $ret) ) };
-
-    match int_buf.next::<u32>() {
-        Some(1)    => ret!(ApplicationCursorKeys),
-        Some(7)    => ret!(Autowrap),
-        Some(8)    => ret!(Autorepeat),
-        Some(12)   => ret!(CursorBlink),
-        Some(25)   => ret!(ShowCursor),
-        Some(47)   => ret!(AlternateScreenBuffer),
-        Some(1047) => ret!(AlternateScreenBuffer),
-        Some(1048) => ret!(SaveCursor),
-        Some(1049) => ret!(SaveCursorAlternateBufferClear),
-        Some(n)    => Parsed::Error(buffer.len(), Error::UnknownPrivateSetReset(n)),
-        None       => Parsed::Error(buffer.len(), Error::UnknownPrivateSetResetData(buffer.to_owned())),
+    match parse_int(buffer) {
+        Ok(Some(1))    => ret!(ApplicationCursorKeys),
+        Ok(Some(7))    => ret!(Autowrap),
+        Ok(Some(8))    => ret!(Autorepeat),
+        Ok(Some(12))   => ret!(CursorBlink),
+        Ok(Some(25))   => ret!(ShowCursor),
+        Ok(Some(47))   => ret!(AlternateScreenBuffer),
+        Ok(Some(1047)) => ret!(AlternateScreenBuffer),
+        Ok(Some(1048)) => ret!(SaveCursor),
+        Ok(Some(1049)) => ret!(SaveCursorAlternateBufferClear),
+        Ok(Some(n))    => Parsed::Error(buffer.len(), Err::UnknownPrivateSetReset(n)),
+        _              => Parsed::Error(buffer.len(), Err::UnknownPrivateSetResetData(buffer.to_owned())),
     }
 }
 
@@ -375,7 +377,7 @@ fn parse_char_attr(buffer: &[u8]) -> Parsed<CharAttr, ()> {
     macro_rules! ret { ( $ret:expr ) => ( Parsed::Data(int_buf.used(), $ret) ) };
     macro_rules! err { ()            => ( Parsed::Error(int_buf.used(), ()) ) };
 
-    match int_buf.next::<u8>() {
+    match int_buf.next() {
         Some(0)              => ret!(Reset),
         Some(1)              => ret!(Set(Bold)),
         Some(2)              => ret!(Set(Faint)),
@@ -411,25 +413,25 @@ fn parse_char_attr(buffer: &[u8]) -> Parsed<CharAttr, ()> {
         Some(46) | Some(106) => ret!(BGColor(Cyan)),
         Some(47) | Some(107) => ret!(BGColor(White)),
         Some(49)             => ret!(BGColor(Default)),
-        Some(38)             => match int_buf.next::<u8>() {
-            Some(2) => match (int_buf.next::<u8>(), int_buf.next::<u8>(), int_buf.next::<u8>()) {
-                (Some(r), Some(g), Some(b)) => ret!(FGColor(RGB(r, g, b))),
+        Some(38)             => match int_buf.next() {
+            Some(2) => match (int_buf.next(), int_buf.next(), int_buf.next()) {
+                (Some(r), Some(g), Some(b)) => ret!(FGColor(RGB(r as u8, g as u8, b as u8))),
                 _                           => err!(),
             },
-            Some(5) => if let Some(p) = int_buf.next::<u8>() {
-                ret!(FGColor(Palette(p)))
+            Some(5) => if let Some(p) = int_buf.next() {
+                ret!(FGColor(Palette(p as u8)))
             } else {
                 err!()
             },
             _ => err!(),
         },
-        Some(48) => match int_buf.next::<u8>() {
-            Some(2) => match (int_buf.next::<u8>(), int_buf.next::<u8>(), int_buf.next::<u8>()) {
-                (Some(r), Some(g), Some(b)) => ret!(BGColor(RGB(r, g, b))),
+        Some(48) => match int_buf.next() {
+            Some(2) => match (int_buf.next(), int_buf.next(), int_buf.next()) {
+                (Some(r), Some(g), Some(b)) => ret!(BGColor(RGB(r as u8, g as u8, b as u8))),
                 _                           => err!(),
             },
-            Some(5) => if let Some(p) = int_buf.next::<u8>() {
-                ret!(BGColor(Palette(p)))
+            Some(5) => if let Some(p) = int_buf.next() {
+                ret!(BGColor(Palette(p as u8)))
             } else {
                 err!()
             },
@@ -453,14 +455,14 @@ impl<'a> Window<'a> {
     }
 
     /// Yields the next integer from the buffer.
-    pub fn next<T: str::FromStr>(&mut self) -> Option<T> {
+    pub fn next(&mut self) -> Option<usize> {
         if self.cursor >= self.buffer.len() {
             return None
         }
 
         let partial = &self.buffer[self.cursor..];
 
-        parse_int::<T>(match partial.iter().position(|c| *c == b';') {
+        match parse_int(match partial.iter().position(|c| *c == b';') {
             Some(p) => {
                 self.cursor = self.cursor + p + 1;
 
@@ -471,7 +473,10 @@ impl<'a> Window<'a> {
 
                 partial
             }
-        })
+        }) {
+            Ok(n) => n,
+            _     => None,
+        }
     }
 
     /// Yields the unparsed portion of the buffer
@@ -485,9 +490,15 @@ impl<'a> Window<'a> {
     }
 }
 
-fn parse_int<T: str::FromStr>(buf: &[u8]) -> Option<T> {
+fn parse_int(buf: &[u8]) -> Result<Option<usize>, Err> {
+    if buf.is_empty() {
+        return Ok(None);
+    }
+
     unsafe {
         // Should be ok for numbers
         str::from_utf8_unchecked(buf)
-    }.parse::<T>().ok()
+    }.parse::<usize>()
+     .map(|i| Some(i))
+     .map_err(|e| Err::IntParseError(e))
 }
