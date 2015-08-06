@@ -35,15 +35,49 @@ pub enum Seq {
     SetKeypadMode(KeypadMode),
 
     /* CSI */
+    // TODO: Does this require a vector?
     ModeSet(Vec<Mode>),
+    // TODO: Does this require a vector?
     ModeReset(Vec<Mode>),
+    // TODO: Does this require a vector?
     PrivateModeSet(Vec<PrivateMode>),
+    // TODO: Does this require a vector?
     PrivateModeReset(Vec<PrivateMode>),
     CharAttr(Vec<CharAttr>),
     EraseInLine(EraseInLine),
     EraseInDisplay(EraseInDisplay),
-    /// Set cursor position, zero-indexed row-column
+    /// Move the cursor n tabs backward (CBT).
+    CursorBackwardsTabulation(usize),
+    /// Move the cursor to the nth column, 0-indexed (CHA).
+    CursorHorizontalAbsolute(usize),
+    /// Move the cursor n tabs forward (CHT).
+    CursorForwardTabulation(usize),
+    /// Move the cursor down n lines, placing it in the first column (CNL).
+    CursorNextLine(usize),
+    /// Move the cursor up n lines, placing it in the first column (CPL).
+    CursorPreviousLine(usize),
+    /// Report cursor position (CPR).
+    /// 
+    /// Report format: ``ESC [ r ; c R`` where ``r`` and ``c`` are current row and column.
+    CursorPositionReport,
+    /// Set cursor position, zero-indexed row-column (CUP).
     CursorPosition(usize, usize),
+    /// Move cursor position n columns forward (CUF), stopping at right border of page.
+    CursorForward(usize),
+    /// Move cursor position n columns backward (CUB), stopping at left border of page.
+    CursorBackward(usize),
+    /// Move cursor position n rows down (CUD), stopping at the bottom line.
+    CursorDown(usize),
+    /// Move cursor position n rows up (CUU), stopping at the top line.
+    CursorUp(usize),
+    /// Delete n characters from the cursor position to the right (DCH).
+    ///
+    /// If n is larger than the number of characters between the cursor and the right margin, only
+    /// delete to the right margin.
+    ///
+    /// Characters not deleted should move to the left to fill the positions of the deleted
+    /// characters, keeping their original character attributes.
+    DeleteCharacter(usize),
     /* OSC */
     SetWindowTitle(String),
     SetIconName(String),
@@ -60,7 +94,29 @@ pub enum KeypadMode {
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
 pub enum PrivateMode {
     /// Application Cursor Keys (DECCKM).
+    /// 
+    /// * If the DECCKM function is set, then the arrow keys send application sequences to the host.
+    /// * If the DECCKM function is reset, then the arrow keys send ANSI cursor sequences to the host.
     ApplicationCursorKeys,
+    /// Sets/clears the key-repeat, when set keys are to be repeated after 0.5 seconds until key is
+    /// released (DECARM).
+    /// 
+    /// Default: repeat (set).
+    Autorepeat,
+    /// Sets/clears the automatic wrapping of the cursor when it reaches the end of a line (DECAWM)
+    ///
+    /// Default: No-autowrap (not set).
+    Autowrap,
+    /// Start/stop blinking cursor, att610
+    CursorBlink,
+    ShowCursor,
+    AlternateScreenBuffer,
+    /// Save cursor as in DECSC
+    SaveCursor,
+    /// Save cursor, switch to alternate screen buffer, clearing it first.
+    ///
+    /// This combines ``AlternateScreenBuffer`` and ``SaveCursor``.
+    SaveCursorAlternateBufferClear,
     /// Represents an unknown PrivateMode
     Unknown(u32),
 }

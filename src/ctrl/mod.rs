@@ -142,6 +142,17 @@ fn parse_csi(buffer: &[u8]) -> Parsed<Seq, Error> {
                 .map(|a| Seq::CharAttr(a))
                 .map_err(|_| Error::CharAttrError)
                 .inc_used(1),
+            b'n' => return match parse_int::<usize>(&buffer[..i]) {
+                Some(6) => Parsed::Data(i + 1, Seq::CursorPositionReport),
+                _       => Parsed::Error(i + 1, Error::UnknownCSI(From::from(&buffer[..i + 1]))),
+            },
+            b'A' => return Parsed::Data(i + 1, Seq::CursorUp(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
+            b'B' => return Parsed::Data(i + 1, Seq::CursorDown(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
+            b'C' => return Parsed::Data(i + 1, Seq::CursorForward(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
+            b'D' => return Parsed::Data(i + 1, Seq::CursorBackward(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
+            b'E' => return Parsed::Data(i + 1, Seq::CursorNextLine(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
+            b'F' => return Parsed::Data(i + 1, Seq::CursorPreviousLine(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
+            b'G' => return Parsed::Data(i + 1, Seq::CursorHorizontalAbsolute(cmp::max(0, parse_int::<usize>(&buffer[..i]).unwrap_or(1)) - 1)),
             b'H' => return {
                 // 1-indexed coordinates, row;col, defaults to 1 if not present.
                 let mut int_buf = Window::new(&buffer[..i]);
@@ -151,6 +162,7 @@ fn parse_csi(buffer: &[u8]) -> Parsed<Seq, Error> {
 
                 Parsed::Data(i + 1, Seq::CursorPosition(row - 1, col - 1))
             },
+            b'I' => return Parsed::Data(i + 1, Seq::CursorForwardTabulation(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
             b'J' => return Parsed::Data(i + 1, match parse_int::<u8>(&buffer[..i]) {
                 Some(1) => Seq::EraseInDisplay(EraseInDisplay::Above),
                 Some(2) => Seq::EraseInDisplay(EraseInDisplay::All),
@@ -161,6 +173,8 @@ fn parse_csi(buffer: &[u8]) -> Parsed<Seq, Error> {
                 Some(2) => Seq::EraseInLine(EraseInLine::All),
                 _       => Seq::EraseInLine(EraseInLine::Right),
             }),
+            b'P' => return Parsed::Data(i + 1, Seq::DeleteCharacter(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
+            b'Z' => return Parsed::Data(i + 1, Seq::CursorBackwardsTabulation(parse_int::<usize>(&buffer[..i]).unwrap_or(1))),
             b'?' => private = true, /* In buffer, set private mode for mode-setters/resetters */
             c if c >= 0x40 && c <= 0x7E =>
                 return Parsed::Error(i + 1, Error::UnknownCSI(From::from(&buffer[..i + 1]))),
@@ -333,9 +347,17 @@ fn parse_private_mode(buffer: &[u8]) -> Parsed<PrivateMode, Error> {
     macro_rules! ret { ( $ret:expr ) => ( Parsed::Data(int_buf.used(), $ret) ) };
 
     match int_buf.next::<u32>() {
-        Some(1) => ret!(ApplicationCursorKeys),
-        Some(n) => Parsed::Error(buffer.len(), Error::UnknownPrivateSetReset(n)),
-        None    => Parsed::Error(buffer.len(), Error::UnknownPrivateSetResetData(buffer.to_owned())),
+        Some(1)    => ret!(ApplicationCursorKeys),
+        Some(7)    => ret!(Autowrap),
+        Some(8)    => ret!(Autorepeat),
+        Some(12)   => ret!(CursorBlink),
+        Some(25)   => ret!(ShowCursor),
+        Some(47)   => ret!(AlternateScreenBuffer),
+        Some(1047) => ret!(AlternateScreenBuffer),
+        Some(1048) => ret!(SaveCursor),
+        Some(1049) => ret!(SaveCursorAlternateBufferClear),
+        Some(n)    => Parsed::Error(buffer.len(), Error::UnknownPrivateSetReset(n)),
+        None       => Parsed::Error(buffer.len(), Error::UnknownPrivateSetResetData(buffer.to_owned())),
     }
 }
 
@@ -463,7 +485,7 @@ impl<'a> Window<'a> {
     }
 }
 
-pub fn parse_int<T: str::FromStr>(buf: &[u8]) -> Option<T> {
+fn parse_int<T: str::FromStr>(buf: &[u8]) -> Option<T> {
     unsafe {
         // Should be ok for numbers
         str::from_utf8_unchecked(buf)
