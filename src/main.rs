@@ -16,6 +16,7 @@ use gl::glyph;
 use std::io;
 use std::process;
 use std::thread;
+use term::color;
 
 fn main() {
 
@@ -32,7 +33,7 @@ fn main() {
     }
 }
 
-const FONT_SIZE:   u32 = 16;
+const FONT_SIZE: u32 = 16;
 
 fn window(mut m: pty::Fd) {
     use gl::glyph::Renderer;
@@ -55,7 +56,7 @@ fn window(mut m: pty::Fd) {
     let cell           = glyph_renderer.cell_size();
 
     let mut t = term::Term::new_with_size((10, 10));
-    let mut g = gl::term::GlTerm::new(&display, glyph_renderer).unwrap();
+    let mut g = gl::term::GlTerm::new(&display, color::XtermDefault, glyph_renderer).unwrap();
 
     display.get_window().map(|w| w.set_title("Kopparoxid"));
 

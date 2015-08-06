@@ -1,39 +1,102 @@
 use ctrl;
 use std::cmp;
 
+pub mod color;
+
 #[derive(Copy, Clone, Default)]
 pub struct Character {
-    pub glyph: usize,
+    glyph: usize,
     fg:    ctrl::Color,
     bg:    ctrl::Color,
 }
 
-fn color(c: ctrl::Color, default: [f32; 3]) -> [f32; 3] {
-    use ctrl::Color::*;
-
-    match c {
-        Black        => [0.0, 0.0, 0.0],
-        Red          => [1.0, 0.0, 0.0],
-        Green        => [0.0, 1.0, 0.0],
-        Yellow       => [1.0, 1.0, 0.0],
-        Blue         => [0.0, 0.0, 1.0],
-        Magenta      => [1.0, 0.0, 1.0],
-        Cyan         => [0.0, 1.0, 1.0],
-        White        => [1.0, 1.0, 1.0],
-        Default      => default,
-        /* FIXME: Use color palette */
-        Palette(p)   => default,
-        RGB(r, g, b) => [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0],
-    }
+/// Describes a cell in the terminal
+pub trait Cell {
+    /// Returns the column for this cell, 0-indexed, from the left edge of the terminal.
+    fn col(&self) -> usize;
+    /// Returns the row for this cell, 0-indexed, from the top edge of the terminal.
+    fn row(&self) -> usize;
+    /// Returns the unicode glyph to draw in this cell.
+    fn glyph(&self) -> usize;
+    /// Returns the foreground color to use.
+    fn fg(&self) -> ctrl::Color;
+    /// Returns the backgroudn color to use.
+    fn bg(&self) -> ctrl::Color;
 }
 
-impl Character {
-    pub fn get_fg(&self) -> [f32; 3] {
-        color(self.fg, [1.0, 1.0, 1.0])
+/// Describes the visual area which is visible of the terminal contents.
+pub trait Display {
+    /// Iterates all glyphs used in the current displayed content and calls the provided
+    /// closure for each glyph.
+    ///
+    /// NOTE: The closure may be called with the same glyph more than once.
+    ///
+    /// TODO: When iterators can properly be returned from functions, use an iterator instead of
+    /// the closure.
+    fn glyphs<F>(&self, mut f: F) where F: Sized + FnMut(usize);
+    /// Iterates all the cells to be displayed for the content and calls the provided closure
+    /// for each cell.
+    ///
+    /// NOTE: Empty cells may be skipped
+    ///
+    /// TODO: When iterators can properly be returned from functions, use an iterator instead of
+    /// the closure.
+    fn cells<F>(&self, mut f: F) where F: Sized + FnMut(&Cell);
+}
+
+impl Display for Term {
+    fn glyphs<F>(&self, mut f: F)
+      where F: Sized + FnMut(usize) {
+        for r in self.data.iter() {
+            for c in r.iter().filter(|c| c.glyph != 0) {
+                f(c.glyph)
+            }
+        }
     }
 
-    pub fn get_bg(&self) -> [f32; 3] {
-        color(self.bg, [0.0, 0.0, 0.0])
+    fn cells<F>(&self, mut f: F)
+      where F: Sized + FnMut(&Cell) {
+        struct C {
+            col:   usize,
+            row:   usize,
+            glyph: usize,
+            fg:    ctrl::Color,
+            bg:    ctrl::Color,
+        }
+
+        impl Cell for C {
+            fn col(&self) -> usize {
+                self.col
+            }
+
+            fn row(&self) -> usize {
+                self.row
+            }
+
+            fn glyph(&self) -> usize {
+                self.glyph
+            }
+
+            fn fg(&self) -> ctrl::Color {
+                self.fg
+            }
+
+            fn bg(&self) -> ctrl::Color {
+                self.bg
+            }
+        }
+
+        for (row, r) in self.data.iter().enumerate() {
+            for (col, c) in r.iter().enumerate().filter(|&(_, c)| c.glyph != 0) {
+                f(&C{
+                    col:   col,
+                    row:   row,
+                    glyph: c.glyph,
+                    fg:    c.fg,
+                    bg:    c.bg,
+                })
+            }
+        }
     }
 }
 

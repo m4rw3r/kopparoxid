@@ -1,6 +1,9 @@
 use gl::glyph;
 use glium;
 use std::rc::Rc;
+use term::Cell;
+use term::Display;
+use term::color;
 use term;
 
 #[derive(Copy, Clone, Debug)]
@@ -14,9 +17,13 @@ struct ColoredVertex {
 implement_vertex!(ColoredVertex, xy, rgb);
 
 /// Structure used to render a Term instance onto a GL surface
-pub struct GlTerm<'a, F, R>
-  where F: 'a + glium::backend::Facade, R: 'a + glyph::Renderer<u8> {
+pub struct GlTerm<'a, F, R, C>
+  where F: 'a + glium::backend::Facade,
+        R: 'a + glyph::Renderer<u8>,
+        C: 'a + color::Manager {
+    /// OpenGl render context
     context:   Rc<glium::backend::Context>,
+    /// Map and texture for storing rendered glyphs
     glyphs:    glyph::Map<'a, F, R>,
     /// Vertex buffer for foreground text cells
     fg_buffer: Vec<glyph::TexturedVertex>,
@@ -26,13 +33,17 @@ pub struct GlTerm<'a, F, R>
     fg_shader: glium::Program,
     /// Shader for rendering background vertices
     bg_shader: glium::Program,
+    /// Color code converter
+    colors:    C,
     /// Cellsize is the pixel-size of a cell
     cellsize:  (f32, f32),
 }
 
-impl<'a, F, R> GlTerm<'a, F, R>
-  where F: 'a + glium::backend::Facade, R: 'a + glyph::Renderer<u8> {
-    pub fn new(display: &'a F, glyph_renderer: R) -> Result<Self, glium::ProgramCreationError> {
+impl<'a, F, R, C> GlTerm<'a, F, R, C>
+  where F: 'a + glium::backend::Facade,
+        R: 'a + glyph::Renderer<u8>,
+        C: 'a + color::Manager {
+    pub fn new(display: &'a F, colors: C, glyph_renderer: R) -> Result<Self, glium::ProgramCreationError> {
         use gl::glyph::Renderer;
 
         let fg_shader = try!(glium::Program::from_source(display,
@@ -105,18 +116,13 @@ impl<'a, F, R> GlTerm<'a, F, R>
             bg_buffer: Vec::new(),
             fg_shader: fg_shader,
             bg_shader: bg_shader,
+            colors:    colors,
             cellsize:  (cellsize.0 as f32, cellsize.1 as f32),
         })
     }
 
     fn load_glyphs(&mut self, t: &term::Term) {
-        for r in t.data.iter() {
-            for c in r.iter() {
-                if c.glyph != 0 {
-                    self.glyphs.load(c.glyph).unwrap();
-                }
-            }
-        }
+        t.glyphs(|g| self.glyphs.load(g).unwrap() )
     }
 
     fn load_bg_vertices(&mut self, t: &term::Term, scale: (f32, f32), offset: (f32, f32)) {
@@ -124,23 +130,21 @@ impl<'a, F, R> GlTerm<'a, F, R>
 
         self.bg_buffer.truncate(0);
 
-        for (row, r) in t.data.iter().enumerate() {
-            for (col, c) in r.iter().enumerate().filter(|&(_, c)| c.glyph != 0) {
-                let left   = offset.0 + col as f32 * cellsize.0 * scale.0;
-                let right  = left + cellsize.0 * scale.0;
-                let bottom = offset.1 - (row + 1) as f32 * cellsize.1 * scale.1;
-                let top    = bottom + cellsize.1 * scale.1;
-                let rgb    = c.get_bg();
+        t.cells(|c| {
+            let left   = offset.0 + c.col() as f32 * cellsize.0 * scale.0;
+            let right  = left + cellsize.0 * scale.0;
+            let bottom = offset.1 - (c.row() + 1) as f32 * cellsize.1 * scale.1;
+            let top    = bottom + cellsize.1 * scale.1;
+            let rgb    = self.colors.bg(c.bg());
 
-                self.bg_buffer.push(ColoredVertex { xy: [left,  bottom], rgb: rgb });
-                self.bg_buffer.push(ColoredVertex { xy: [left,  top],    rgb: rgb });
-                self.bg_buffer.push(ColoredVertex { xy: [right, top],    rgb: rgb });
+            self.bg_buffer.push(ColoredVertex { xy: [left,  bottom], rgb: rgb });
+            self.bg_buffer.push(ColoredVertex { xy: [left,  top],    rgb: rgb });
+            self.bg_buffer.push(ColoredVertex { xy: [right, top],    rgb: rgb });
 
-                self.bg_buffer.push(ColoredVertex { xy: [right, top],    rgb: rgb });
-                self.bg_buffer.push(ColoredVertex { xy: [right, bottom], rgb: rgb });
-                self.bg_buffer.push(ColoredVertex { xy: [left,  bottom], rgb: rgb });
-            }
-        }
+            self.bg_buffer.push(ColoredVertex { xy: [right, top],    rgb: rgb });
+            self.bg_buffer.push(ColoredVertex { xy: [right, bottom], rgb: rgb });
+            self.bg_buffer.push(ColoredVertex { xy: [left,  bottom], rgb: rgb });
+        })
     }
 
     fn load_fg_vertices(&mut self, t: &term::Term, scale: (f32, f32), offset: (f32, f32)) {
@@ -148,20 +152,19 @@ impl<'a, F, R> GlTerm<'a, F, R>
 
         self.fg_buffer.truncate(0);
 
-        for (row, r) in t.data.iter().enumerate() {
-            for (col, c) in r.iter().enumerate().filter(|&(_, c)| c.glyph != 0) {
-                if let Some(g) = self.glyphs.get(c.glyph) {
-                    let left     = offset.0 + col as f32 * cellsize.0 * scale.0;
-                    let bottom   = offset.1 - (row + 1) as f32 * cellsize.1 * scale.1;
-                    let charsize = (g.width as f32 * scale.0, g.height as f32 * scale.1);
-                    let vs       = g.vertices((left, bottom), charsize, c.get_fg());
+        t.cells(|c| {
+            if let Some(g) = self.glyphs.get(c.glyph()) {
+                let fg       = self.colors.fg(c.fg());
+                let left     = offset.0 + c.col() as f32 * cellsize.0 * scale.0;
+                let bottom   = offset.1 - (c.row() + 1) as f32 * cellsize.1 * scale.1;
+                let charsize = (g.width as f32 * scale.0, g.height as f32 * scale.1);
+                let vs       = g.vertices((left, bottom), charsize, fg);
 
-                    for v in vs.into_iter() {
-                        self.fg_buffer.push(*v);
-                    }
+                for v in vs.into_iter() {
+                    self.fg_buffer.push(*v);
                 }
             }
-        }
+        })
     }
 
     /// Draws the terminal onto ``target``.
@@ -201,8 +204,12 @@ impl<'a, F, R> GlTerm<'a, F, R>
         let bg_buffer = glium::VertexBuffer::new(&self.context, &self.bg_buffer).unwrap();
         let fg_buffer = glium::VertexBuffer::new(&self.context, &self.fg_buffer).unwrap();
 
-        // TODO: Use proper background setting from terminal
-        target.clear_color(1.0, 1.0, 1.0, 1.0);
+        let rgb = self.colors.fill();
+        let r   = rgb[0];
+        let g   = rgb[1];
+        let b   = rgb[2];
+
+        target.clear_color(r, g, b, 1.0);
 
         target.draw(&bg_buffer, &indices, &self.bg_shader, &uniforms, &params).unwrap();
         target.draw(&fg_buffer, &indices, &self.fg_shader, &uniforms, &params).unwrap();

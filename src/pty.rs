@@ -1,7 +1,9 @@
-use std::io;
-use std::ptr;
-use libc;
 use errno;
+use libc;
+use std::ffi;
+use std::io;
+use std::process;
+use std::ptr;
 
 #[link(name = "util")]
 extern {
@@ -89,26 +91,19 @@ pub fn open() -> io::Result<(Fd, Fd)> {
 }
 
 fn execvp(cmd: &str, params: &[&str]) -> io::Error {
-    use libc::execvp;
-    use std::ffi::CString;
-    use std::ptr;
-
-    let cmd      = CString::new(cmd).unwrap();
-    let mut args = params.iter().map(|&s| CString::new(s).unwrap().as_ptr()).collect::<Vec<*const i8>>();
+    let cmd      = ffi::CString::new(cmd).unwrap();
+    let mut args = params.iter().map(|&s| ffi::CString::new(s).unwrap().as_ptr()).collect::<Vec<*const i8>>();
 
     args.push(ptr::null());
 
     unsafe {
-        execvp(cmd.as_ptr(), args.as_mut_ptr());
+        libc::execvp(cmd.as_ptr(), args.as_mut_ptr());
     }
 
     io::Error::last_os_error()
 }
 
 pub fn run_sh(m: Fd, s: Fd) -> ! {
-    use libc;
-    use std::process;
-
     /* Get rid of the master fd before running the shell */
     drop(m);
 
