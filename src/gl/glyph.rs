@@ -52,10 +52,33 @@ impl fmt::Display for Error {
     }
 }
 
+/// Glyph padding in pixels, distance outisde the draw area which is supposed to be empty.
+#[derive(Debug, Copy, Clone)]
+pub struct Padding {
+    pub left:   u32,
+    pub top:    u32,
+    pub right:  u32,
+    pub bottom: u32,
+}
+
+/// Glyph metrics in pixels
+#[derive(Debug, Copy, Clone)]
+pub struct Metrics {
+    pub padding: Padding,
+    pub height:  u32,
+    pub width:   u32,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct GlyphData {
+    padding:  Padding,
+    tex_rect: glium::Rect,
+}
+
 /// Trait for rendering glyphs to 2D-textures.
 pub trait Renderer<P: glium::texture::PixelValue + Clone> {
     fn render<F>(&mut self, glyph: usize, f: F) -> Result<(), Error>
-      where F: FnOnce(glium::texture::RawImage2d<P>, gl::Padding) -> Result<(), Error>;
+      where F: FnOnce(glium::texture::RawImage2d<P>, Padding) -> Result<(), Error>;
     /// Returns the (width, height) of a glyph cell in pixels.
     fn cell_size(&self) -> (u32, u32);
 }
@@ -94,7 +117,7 @@ impl<'a> FreeType<'a> {
 
 impl<'a> Renderer<u8> for FreeType<'a> {
     fn render<F>(&mut self, glyph: usize, f: F) -> Result<(), Error>
-      where F: FnOnce(glium::texture::RawImage2d<u8>, gl::Padding) -> Result<(), Error> {
+      where F: FnOnce(glium::texture::RawImage2d<u8>, Padding) -> Result<(), Error> {
         use std::borrow::Cow;
         use glium::texture;
 
@@ -129,7 +152,7 @@ impl<'a> Renderer<u8> for FreeType<'a> {
             height: glyph_bitmap.rows()  as u32,
             format: texture::ClientFormat::U8
         },
-        gl::Padding{
+        Padding{
             left:   left   as u32,
             top:    top    as u32,
             right:  right  as u32,
@@ -146,7 +169,7 @@ impl<'a> Renderer<u8> for FreeType<'a> {
 pub struct Map<'a, F, R>
   where F: 'a + glium::backend::Facade, R: 'a + Renderer<u8> {
     renderer: R,
-    glyphs:   collections::BTreeMap<usize, glium::Rect>,
+    glyphs:   collections::BTreeMap<usize, GlyphData>,
     atlas:    gl::Atlas<'a, F>
 }
 
@@ -174,9 +197,9 @@ impl<'a, F, R> Map<'a, F, R>
         }
 
         renderer.render(glyph, |texture, padding| {
-            let r = atlas.add_with_padding(texture, padding);
+            let r = atlas.add(texture);
 
-            glyphs.insert(glyph, r);
+            glyphs.insert(glyph, GlyphData { padding: padding, tex_rect: r });
 
             Ok(())
         })
@@ -184,7 +207,8 @@ impl<'a, F, R> Map<'a, F, R>
 
     /// Retrieves a specific glyph if it exists.
     pub fn get<'b>(&'b self, glyph: usize) -> Option<Glyph<'b>> {
-        self.glyphs.get(&glyph).map(|g| {
+        self.glyphs.get(&glyph).map(|d| {
+            let g               = d.tex_rect;
             let (width, height) = self.atlas.texture_size();
 
             Glyph {
@@ -192,8 +216,11 @@ impl<'a, F, R> Map<'a, F, R>
                 right:   (g.left + g.width)    as f32 / width  as f32,
                 bottom:  (g.bottom)            as f32 / height as f32,
                 top:     (g.bottom + g.height) as f32 / height as f32,
-                width:   g.width,
-                height:  g.height,
+                metrics: Metrics {
+                    padding: d.padding,
+                    width:   g.width,
+                    height:  g.height,
+                },
                 phantom: PhantomData,
             }
         })
@@ -215,7 +242,7 @@ pub struct TexturedVertex {
 
 implement_vertex!(TexturedVertex, xy, rgb, st);
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Debug)]
 pub struct Glyph<'a> {
     /// Distance from left side of texture to left side of glyph area. [0-1]
     left:       f32,
@@ -225,10 +252,8 @@ pub struct Glyph<'a> {
     bottom:     f32,
     /// Distance from bottom side of texture to top side of glyph area. [0-1]
     top:        f32,
-    /// Glyph texture width in pixels.
-    pub width:  u32,
-    /// Glyph texture height in pixels.
-    pub height: u32,
+    /// Glyph metrics in pixels.
+    pub metrics: Metrics,
     /// Guard to prevent resizing of the texture which these fractional values point at.
     phantom:    PhantomData<&'a usize>,
 }

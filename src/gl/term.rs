@@ -155,9 +155,9 @@ impl<'a, F, R, C> GlTerm<'a, F, R, C>
         t.cells(|c| {
             if let Some(g) = self.glyphs.get(c.glyph()) {
                 let fg       = self.colors.fg(c.fg());
-                let left     = offset.0 + c.col() as f32 * cellsize.0 * scale.0;
-                let bottom   = offset.1 - (c.row() + 1) as f32 * cellsize.1 * scale.1;
-                let charsize = (g.width as f32 * scale.0, g.height as f32 * scale.1);
+                let left     = offset.0 + (c.col() as f32 * cellsize.0 + g.metrics.padding.left as f32) * scale.0;
+                let bottom   = offset.1 - ((c.row() + 1) as f32 * cellsize.1 - g.metrics.padding.bottom as f32) * scale.1;
+                let charsize = (g.metrics.width as f32 * scale.0, g.metrics.height as f32 * scale.1);
                 let vs       = g.vertices((left, bottom), charsize, fg);
 
                 for v in vs.into_iter() {

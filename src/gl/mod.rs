@@ -7,13 +7,6 @@ use std::cmp;
 /// The growth factor for the atlas.
 const ATLAS_GROWTH_FACTOR: u32 = 2;
 
-pub struct Padding {
-    left:   u32,
-    top:    u32,
-    right:  u32,
-    bottom: u32,
-}
-
 #[derive(Debug)]
 pub struct Atlas<'a, F> where F: 'a + glium::backend::Facade {
     context:    &'a F,
@@ -40,28 +33,23 @@ impl<'a, F> Atlas<'a, F> where F: 'a + glium::backend::Facade {
     }
 
     pub fn add<P: glium::texture::PixelValue + Clone>(&mut self, raw: glium::texture::RawImage2d<P>) -> glium::Rect {
-        self.add_with_padding(raw, Padding{left: 0, top: 0, right: 0, bottom: 0})
-    }
-
-    pub fn add_with_padding<P: glium::texture::PixelValue + Clone>(&mut self, raw: glium::texture::RawImage2d<P>, padding: Padding) -> glium::Rect {
-        let req_size     = (padding.left + raw.width + padding.right, padding.top + raw.height + padding.bottom);
         let cur_size     = (self.texture.get_width(), self.texture.get_height().unwrap_or(1));
         let mut new_size = cur_size;
 
         // Extend width if necessary
-        while req_size.0 > new_size.0 {
+        while raw.width > new_size.0 {
             new_size.0 = new_size.0 * ATLAS_GROWTH_FACTOR;
         }
 
         // Have we used up this row? If so, end it and create a new one
-        if self.used.0 + req_size.0 > new_size.0 {
+        if self.used.0 + raw.width > new_size.0 {
             self.used.0     = 0;
             self.used.1     = self.used.1 + self.row_height;
             self.row_height = 0;
         }
 
         // Extend height if necessary
-        while self.used.1 + req_size.1 > new_size.1 {
+        while self.used.1 + raw.height > new_size.1 {
             new_size.1 = new_size.1 * ATLAS_GROWTH_FACTOR;
         }
 
@@ -83,23 +71,18 @@ impl<'a, F> Atlas<'a, F> where F: 'a + glium::backend::Facade {
                 width:  w,
             }, img);
         }
-
-        self.texture.write(glium::Rect{
-            left:   self.used.0 + padding.left,
-            bottom: self.used.1 + padding.top,
-            height: raw.height,
-            width:  raw.width,
-        }, raw);
-
+        
         let r = glium::Rect{
             left:   self.used.0,
             bottom: self.used.1,
-            height: req_size.1,
-            width:  req_size.0,
+            height: raw.height,
+            width:  raw.width,
         };
 
-        self.used.0     = self.used.0 + req_size.0;
-        self.row_height = cmp::max(self.row_height, req_size.1);
+        self.texture.write(r, raw);
+
+        self.used.0     = self.used.0 + r.width;
+        self.row_height = cmp::max(self.row_height, r.height);
 
         r
     }
