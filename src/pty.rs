@@ -91,13 +91,14 @@ pub fn open() -> io::Result<(Fd, Fd)> {
 }
 
 fn execvp(cmd: &str, params: &[&str]) -> io::Error {
-    let cmd      = ffi::CString::new(cmd).unwrap();
-    let mut args = params.iter().map(|&s| ffi::CString::new(s).unwrap().as_ptr()).collect::<Vec<*const i8>>();
+    let     cmd          = ffi::CString::new(cmd).unwrap();
+    let     args: Vec<_> = params.iter().map(|&s| ffi::CString::new(s).unwrap()).collect();
+    let mut ptrs: Vec<_> = args.iter().map(|s| s.as_ptr()).collect();
 
-    args.push(ptr::null());
+    ptrs.push(ptr::null());
 
     unsafe {
-        libc::execvp(cmd.as_ptr(), args.as_mut_ptr());
+        libc::execvp(cmd.as_ptr(), ptrs.as_mut_ptr());
     }
 
     io::Error::last_os_error()
