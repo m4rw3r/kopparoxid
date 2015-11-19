@@ -168,14 +168,15 @@ impl<'a, F, R, C> GlTerm<'a, F, R, C>
     }
 
     /// Draws the terminal onto ``target``.
-    /// 
+    ///
     ///  * ``t`` is the terminal data to draw.
     ///  * ``fb_dim`` is the framebuffer dimensions in pixels which is needed to avoid blurry
-    ///    text and/or stretching. 
+    ///    text and/or stretching.
     ///  * ``offset`` is the gl-offset to render at.
     pub fn draw<T>(&mut self, target: &mut T, t: &term::Term, fb_dim: (u32, u32), offset: (f32, f32))
       where T: glium::Surface {
         use glium::index;
+        use glium::draw_parameters::Blend;
         use glium::draw_parameters::BlendingFunction;
         use glium::draw_parameters::LinearBlendingFactor;
 
@@ -193,10 +194,13 @@ impl<'a, F, R, C> GlTerm<'a, F, R, C>
                 .magnify_filter(glium::uniforms::MagnifySamplerFilter::Nearest),
         };
         let params = glium::DrawParameters {
-            blending_function: Some(BlendingFunction::Addition {
-                source:      LinearBlendingFactor::SourceAlpha,
-                destination: LinearBlendingFactor::OneMinusSourceAlpha,
-            }),
+            blend: Blend {
+                color: BlendingFunction::Addition {
+                    source:      LinearBlendingFactor::SourceAlpha,
+                    destination: LinearBlendingFactor::OneMinusSourceAlpha,
+                },
+                ..Default::default()
+            },
             ..Default::default()
         };
 
