@@ -3,6 +3,8 @@ extern crate clock_ticks;
 extern crate errno;
 extern crate glutin;
 #[macro_use]
+extern crate chomp;
+#[macro_use]
 extern crate glium;
 extern crate freetype as ft;
 

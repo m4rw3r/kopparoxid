@@ -11,3 +11,4 @@ libc        = "*"
 glutin      = "*"
 log         = "*"
 glium       = "*"
+chomp       = { path = "/Users/m4rw3r/Projects/Self/chomp" }
