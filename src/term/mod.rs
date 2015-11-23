@@ -249,45 +249,43 @@ impl Term {
         }
     }
 
-    pub fn pump<T>(&mut self, iter: T) where T: Iterator<Item=ctrl::Seq> {
-        for i in iter {
-            use ctrl::Seq::*;
-            use ctrl::CharAttr::*;
-            use ctrl::Color;
+    pub fn handle(&mut self, item: ctrl::Seq) {
+        use ctrl::Seq::*;
+        use ctrl::CharAttr::*;
+        use ctrl::Color;
 
-            self.dirty = true;
+        self.dirty = true;
 
-            match i {
-                SetWindowTitle(_) => {},
-                Unicode(c)                           => self.put_char(c as usize),
-                CharAttr(list) => {
-                    for a in list {
-                        match a {
-                            Reset      => {
-                                self.set_fg(Color::Default);
-                                self.set_bg(Color::Default);
-                            },
-                            FGColor(c) => self.set_fg(c),
-                            BGColor(c) => self.set_bg(c),
-                            _          => {
-                                println!("Unknown char attr: {:?}", a);
-                            },
-                        }
+        match item {
+            SetWindowTitle(_) => {},
+            Unicode(c)        => self.put_char(c as usize),
+            CharAttr(list)    => {
+                for a in list {
+                    match a {
+                        Reset      => {
+                            self.set_fg(Color::Default);
+                            self.set_bg(Color::Default);
+                        },
+                        FGColor(c) => self.set_fg(c),
+                        BGColor(c) => self.set_bg(c),
+                        _          => {
+                            println!("Unknown char attr: {:?}", a);
+                        },
                     }
-                },
-                EraseInDisplay(ctrl::EraseInDisplay::Below) => self.erase_in_display_below(),
-                EraseInLine(ctrl::EraseInLine::Right)       => self.erase_in_line_right(),
-                CursorPosition(row, col)                    => self.set_pos(col, row),
-                CarriageReturn                              => self.set_pos_col(0),
-                Backspace                                   => self.set_pos_diff((-1, 0)),
-                LineFeed                                    => {
-                    self.set_pos_diff((0, 1));
-                    self.set_pos_col(0)
-                },
-                _                                           => {
-                    println!("Unknown seq: {:?}", i);
-                },
-            }
+                }
+            },
+            EraseInDisplay(ctrl::EraseInDisplay::Below) => self.erase_in_display_below(),
+            EraseInLine(ctrl::EraseInLine::Right)       => self.erase_in_line_right(),
+            CursorPosition(row, col)                    => self.set_pos(col, row),
+            CarriageReturn                              => self.set_pos_col(0),
+            Backspace                                   => self.set_pos_diff((-1, 0)),
+            LineFeed                                    => {
+                self.set_pos_diff((0, 1));
+                self.set_pos_col(0)
+            },
+            _                                           => {
+                println!("Unknown seq: {:?}", item);
+            },
         }
     }
 }

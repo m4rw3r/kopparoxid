@@ -7,10 +7,12 @@ use chomp;
 use chomp::{
     U8Result,
     Input,
-    ParseError,
-    ParseResult,
+    ParseResult
 };
-use chomp::parse_slice;
+use chomp::buffer::{
+    Stream,
+    IntoStream,
+};
 use chomp::ascii::decimal;
 use chomp::parsers::{
     any,
@@ -40,21 +42,11 @@ pub use self::sequences::{
     Seq,
 };
 
-static UTF8_TRAILING: [u8; 256] = [
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3,4,4,4,4,5,5,5,5];
-
 #[derive(Debug)]
 pub enum Error {
     CharAttrError(Vec<u8>),
     UnknownCharset(u8, Option<u8>),
-    UnknownCSI(Vec<u8>),
+    UnknownCSI(u8, Vec<u8>),
     UnknownOSC(Vec<u8>),
     UnknownEscapeChar(u8),
     UnknownSetReset(usize),
@@ -71,7 +63,7 @@ impl fmt::Display for Error {
         use self::Error::*;
 
         match *self {
-            UnknownCSI(ref data)              => write!(f, "Unknown control sequence: {:?}", String::from_utf8_lossy(data)),
+            UnknownCSI(c, ref data)           => write!(f, "Unknown control sequence: {:?} {:?}", c as char, String::from_utf8_lossy(data)),
             UnknownOSC(ref data)              => write!(f, "Unknown operating system command: {:?}", String::from_utf8_lossy(data)),
             UnknownCharset(c, None)           => write!(f, "Unknown charset sequence: {:?}", c),
             UnknownCharset(c, Some(d))        => write!(f, "Unknown charset sequence: {:?} {:?}", c, d),
@@ -177,11 +169,9 @@ fn parse_csi(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
             b'm' => if buf.len() == 0 {
                 m.ret(Seq::CharAttr(vec![CharAttr::Reset]))
             } else {
-                m.from_result(match parse_slice::<_, Vec<_>, _, _>(buf, |i| many1(i, parse_char_attr)) {
-                    Ok(n) => Ok(Seq::CharAttr(n)),
-                    Err(ParseError::ParseError(_, e)) => Err(Error::CharAttrError(buf.to_owned())),
-                    Err(_) => Err(Error::CharAttrError(buf.to_owned())),
-                })
+                m.from_result(buf.into_stream().parse::<_, Vec<_>, _>(|i| many1(i, parse_char_attr))
+                              .map(|a| Seq::CharAttr(a))
+                              .map_err(|_| Error::CharAttrError(buf.to_owned())))
             },
             /*b'm' => return multiple_w_default(&buf[..i], parse_char_attr, CharAttr::Reset)
                 .map(|a| Seq::CharAttr(a))
@@ -189,7 +179,7 @@ fn parse_csi(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
                 .inc_used(1),*/
             b'n' => match parse_int(buf) {
                 Ok(Some(6)) => m.ret(Seq::CursorPositionReport),
-                _           => m.err(Error::UnknownCSI(From::from(buf))),
+                _           => m.err(Error::UnknownCSI(b'n', From::from(buf))),
             },
             b'A' => m.from_result(parse_int(buf).map(|n| Seq::CursorUp(n.unwrap_or(1)))),
             b'B' => m.from_result(parse_int(buf).map(|n| Seq::CursorDown(n.unwrap_or(1)))),
@@ -198,19 +188,12 @@ fn parse_csi(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
             b'E' => m.from_result(parse_int(buf).map(|n| Seq::CursorNextLine(n.unwrap_or(1)))),
             b'F' => m.from_result(parse_int(buf).map(|n| Seq::CursorPreviousLine(n.unwrap_or(1)))),
             b'G' => return m.from_result(parse_int(buf).map(|n| Seq::CursorHorizontalAbsolute(cmp::max(1, n.unwrap_or(1)) - 1))),
-            b'H' => m.from_result(match parse_slice::<_, _, Error, _>(buf, parser!{
+            b'H' => m.from_result(buf.into_stream().parse::<_, _, Error>(parser!{
                     let row = option(decimal, 1);
                     let col = option(parser!{token(b';'); decimal()}, 1);
 
                     ret Seq::CursorPosition(cmp::max(1, row) - 1, cmp::max(1, col) - 1)
-                }) {
-                    Ok(n) => Ok(n),
-                    Err(e) => {
-                        println!("{:?}", e);
-
-                        Err(Error::UnknownCSI(buf.to_owned()))
-                    }
-            }),
+                }).map_err(|_| Error::UnknownCSI(b'H', buf.to_owned()))),
             b'I' => m.from_result(parse_int(buf).map(|n| Seq::CursorForwardTabulation(n.unwrap_or(1)))),
             b'J' => m.ret(match parse_int(buf) {
                 Ok(Some(1)) => Seq::EraseInDisplay(EraseInDisplay::Above),
@@ -224,7 +207,7 @@ fn parse_csi(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
             }),
             b'P' => m.from_result(parse_int(buf).map(|n| Seq::DeleteCharacter(n.unwrap_or(1)))),
             b'Z' => m.from_result(parse_int(buf).map(|n| Seq::CursorBackwardsTabulation(n.unwrap_or(1)))),
-            _    => m.err(Error::UnknownCSI(From::from(buf))),
+            c    => m.err(Error::UnknownCSI(c, From::from(buf))),
         })
     )
 }
@@ -460,55 +443,6 @@ fn parse_char_attr(i: Input<u8>) -> U8Result<CharAttr> {
         }),
         _ => i.err(chomp::Error::Unexpected),
     })
-}
-
-pub struct Window<'a> {
-    buffer: &'a [u8],
-    cursor: usize,
-}
-
-impl<'a> Window<'a> {
-    pub fn new(buffer: &'a [u8]) -> Self {
-        Window {
-            buffer: buffer,
-            cursor: 0,
-        }
-    }
-
-    /// Yields the next integer from the buffer.
-    pub fn next(&mut self) -> Option<usize> {
-        if self.cursor >= self.buffer.len() {
-            return None
-        }
-
-        let partial = &self.buffer[self.cursor..];
-
-        match parse_int(match partial.iter().position(|c| *c == b';') {
-            Some(p) => {
-                self.cursor = self.cursor + p + 1;
-
-                &partial[..p]
-            },
-            None => {
-                self.cursor = self.buffer.len();
-
-                partial
-            }
-        }) {
-            Ok(n) => n,
-            _     => None,
-        }
-    }
-
-    /// Yields the unparsed portion of the buffer
-    pub fn rest(&self) -> &[u8] {
-        &self.buffer[self.cursor..]
-    }
-
-    /// The number of used bytes of the buffer, includes trailing ';'.
-    pub fn used(&self) -> usize {
-        self.cursor
-    }
 }
 
 fn parse_int(buf: &[u8]) -> Result<Option<usize>, Error> {
