@@ -43,68 +43,70 @@ impl<'a, F, R, C> GlTerm<'a, F, R, C>
   where F: 'a + glium::backend::Facade,
         R: 'a + glyph::Renderer<u8>,
         C: 'a + color::Manager {
-    pub fn new(display: &'a F, colors: C, glyph_renderer: R) -> Result<Self, glium::ProgramCreationError> {
+    pub fn new(display: &'a F, colors: C, glyph_renderer: R) -> Result<Self, glium::program::ProgramChooserCreationError> {
         use gl::glyph::Renderer;
 
-        let fg_shader = try!(glium::Program::from_source(display,
-            // vertex shader
-            "   #version 410
+        let fg_shader = try!(program!(display,
+            410 => {
+                outputs_srgb: true,
+                vertex: "   #version 410
 
-                in vec2 xy;
-                in vec3 rgb;
-                in vec2 st;
+                    in vec2 xy;
+                    in vec3 rgb;
+                    in vec2 st;
 
-                out vec3 pass_rgb;
-                out vec2 pass_st;
+                    out vec3 pass_rgb;
+                    out vec2 pass_st;
 
-                void main() {
-                    gl_Position = vec4(xy, 0, 1);
+                    void main() {
+                        gl_Position = vec4(xy, 0, 1);
 
-                    pass_rgb = rgb;
-                    pass_st  = st;
-                }
-            ",
-            "   #version 410
+                        pass_rgb = rgb;
+                        pass_st  = st;
+                    }
+                ",
+                fragment: "   #version 410
 
-                uniform sampler2D tex;
+                    uniform sampler2D tex;
 
-                in vec3 pass_rgb;
-                in vec2 pass_st;
+                    in vec3 pass_rgb;
+                    in vec2 pass_st;
 
-                out vec4 out_color;
+                    out vec4 out_color;
 
-                void main() {
-                    out_color = vec4(pass_rgb, texture(tex, pass_st).r);
-                }
-            ",
-            None
+                    void main() {
+                        out_color = vec4(pass_rgb, texture(tex, pass_st).r);
+                    }
+                ",
+            },
         ));
-        let bg_shader = try!(glium::Program::from_source(display,
-            // vertex shader
-            "   #version 410
+        let bg_shader = try!(program!(display,
+            410 => {
+                outputs_srgb: true,
+                vertex: "   #version 410
 
-                in vec2 xy;
-                in vec3 rgb;
+                    in vec2 xy;
+                    in vec3 rgb;
 
-                out vec3 pass_rgb;
+                    out vec3 pass_rgb;
 
-                void main() {
-                    gl_Position = vec4(xy, 0, 1);
+                    void main() {
+                        gl_Position = vec4(xy, 0, 1);
 
-                    pass_rgb = rgb;
-                }
-            ",
-            "   #version 410
+                        pass_rgb = rgb;
+                    }
+                ",
+                fragment: "   #version 410
 
-                in vec3 pass_rgb;
+                    in vec3 pass_rgb;
 
-                out vec4 out_color;
+                    out vec4 out_color;
 
-                void main() {
-                    out_color = vec4(pass_rgb, 1);
-                }
-            ",
-            None
+                    void main() {
+                        out_color = vec4(pass_rgb, 1);
+                    }
+                ",
+            },
         ));
 
         let cellsize = glyph_renderer.cell_size();
@@ -168,14 +170,15 @@ impl<'a, F, R, C> GlTerm<'a, F, R, C>
     }
 
     /// Draws the terminal onto ``target``.
-    /// 
+    ///
     ///  * ``t`` is the terminal data to draw.
     ///  * ``fb_dim`` is the framebuffer dimensions in pixels which is needed to avoid blurry
-    ///    text and/or stretching. 
+    ///    text and/or stretching.
     ///  * ``offset`` is the gl-offset to render at.
     pub fn draw<T>(&mut self, target: &mut T, t: &term::Term, fb_dim: (u32, u32), offset: (f32, f32))
       where T: glium::Surface {
         use glium::index;
+        use glium::draw_parameters::Blend;
         use glium::draw_parameters::BlendingFunction;
         use glium::draw_parameters::LinearBlendingFactor;
 
@@ -193,10 +196,13 @@ impl<'a, F, R, C> GlTerm<'a, F, R, C>
                 .magnify_filter(glium::uniforms::MagnifySamplerFilter::Nearest),
         };
         let params = glium::DrawParameters {
-            blending_function: Some(BlendingFunction::Addition {
-                source:      LinearBlendingFactor::SourceAlpha,
-                destination: LinearBlendingFactor::OneMinusSourceAlpha,
-            }),
+            blend: Blend {
+                color: BlendingFunction::Addition {
+                    source:      LinearBlendingFactor::SourceAlpha,
+                    destination: LinearBlendingFactor::OneMinusSourceAlpha,
+                },
+                ..Default::default()
+            },
             ..Default::default()
         };
 

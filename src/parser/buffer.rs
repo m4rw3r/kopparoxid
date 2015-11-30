@@ -3,7 +3,11 @@ use std::iter;
 
 use std::io::BufRead;
 
-use super::Parsed;
+use chomp::{Input, ParseResult};
+use chomp::internal::State;
+use chomp::internal::InputModify;
+use chomp::internal::ParseResultModify;
+use chomp::internal::input;
 
 #[derive(Debug)]
 pub enum IterResult<T, E> {
@@ -47,6 +51,7 @@ impl<T, E> IterResult<T, E> {
 /// The standard std::io::BufRead does not do this, instead it only fills
 /// its buffer when it is completely consumed which causes matching against
 /// the returned buffer to fail in case only a partial match is present.
+#[derive(Debug)]
 pub struct Buffer<T: io::Read> {
     /// Source reader
     source: T,
@@ -81,9 +86,9 @@ impl<T: io::Read> Buffer<T> {
     }
 
     /// Iterates the parser over the data loaded into the buffer, ending when the buffer
-    /// is empty or the parser responds with ``Parsed::Incomplete``.
+    /// is empty or the parser responds with ``ParseResult::Incomplete``.
     pub fn iter_buf<'a, R, E, P>(&'a mut self, parser: P) -> ParserBufIter<'a, T, P>
-      where P: Sized + Fn(&'a [u8]) -> Parsed<R, E> {
+      where P: Sized + Fn(Input<u8>) -> ParseResult<u8, R, E> {
         ParserBufIter {
             buffer: self,
             parser: parser,
@@ -92,11 +97,11 @@ impl<T: io::Read> Buffer<T> {
     }
 
     /// Iterates the parser over the data loaded into the buffer, filling the buffer when
-    /// the parser responds with ``Parsed::Incomplete``.
+    /// the parser responds with ``ParseResult::Incomplete``.
     ///
     /// Stops when attempts to fill the buffer reads 0 bytes.
     pub fn iter<'a, R, E, P>(&'a mut self, parser: P) -> ParserIter<'a, T, P>
-      where P: Sized + Fn(&'a [u8]) -> Parsed<R, E> {
+      where P: Sized + Fn(Input<u8>) -> ParseResult<u8, R, E> {
         ParserIter {
             buffer: self,
             parser: parser,
@@ -143,7 +148,7 @@ impl<T: io::Read> Buffer<T> {
     }
 
     /// Returns true if this buffer contains more than the given chunksize.
-    /// 
+    ///
     /// Checking this after attempting to drain the buffer using ``iter()`` or
     /// ``iter_buf()`` can indicate the presence of a too long input.
     pub fn has_chunk(&self) -> bool {
@@ -187,6 +192,7 @@ impl<T: io::Read> io::BufRead for Buffer<T> {
 /// An iterator over parsed items from the buffer, calling ``Buffer::fill()`` when necessary.
 ///
 /// Will return none when attempts to fill the buffer returns ``0``.
+#[derive(Debug)]
 struct ParserIter<'a, T: 'a + io::Read, P> {
     buffer: &'a mut Buffer<T>,
     parser: P,
@@ -194,7 +200,7 @@ struct ParserIter<'a, T: 'a + io::Read, P> {
 }
 
 impl<'a, T: 'a + io::Read, P, R, E> ParserIter<'a, T, P>
-  where P: Sized + FnMut(&[u8]) -> Parsed<R, E> {
+  where P: Sized + FnMut(Input<u8>) -> ParseResult<u8, R, E> {
 
     /// Limits the number of bytes read while iterating to prevent potentially endless iteration.
     ///
@@ -214,32 +220,35 @@ impl<'a, T: 'a + io::Read, P, R, E> ParserIter<'a, T, P>
 }
 
 impl<'a, T: 'a + io::Read, P, R, E> Iterator for ParserIter<'a, T, P>
-  where P: Sized + FnMut(&[u8]) -> Parsed<R, E> {
+  where P: Sized + FnMut(Input<u8>) -> ParseResult<u8, R, E> {
     type Item = IterResult<R, E>;
 
     fn next(&mut self) -> Option<IterResult<R, E>> {
+        // TODO: Move the consume to a cell or something
         self.buffer.consume(self.used);
 
         let mut parser = &mut self.parser;
 
         loop {
-            match parser(self.buffer.buffer()) {
-                Parsed::Data(consumed, data) => {
-                    self.used = consumed;
+            match parser(input::new(input::DEFAULT, self.buffer.buffer())).internal() {
+                State::Data(remainder, data) => {
+                    // TODO: Do something neater with the remainder
+                    self.used = self.buffer.buffer().len() - remainder.buffer().len();
 
                     return Some(IterResult::Data(data))
                 },
-                Parsed::Error(consumed, err) => {
-                    self.used = consumed;
+                State::Error(remainder, err) => {
+                    // TODO: Do something neater with the remainder
+                    self.used = self.buffer.buffer().len() - remainder.len();
 
                     return Some(IterResult::Error(err))
                 },
-                Parsed::Incomplete => {}
+                State::Incomplete(_) => {}
             }
 
             match self.buffer.fill() {
                 Ok(0)    => return None,
-                Ok(_)    => {},
+                Ok(n)    => {},
                 Err(err) => return Some(IterResult::IoError(err)),
             }
         }
@@ -248,6 +257,7 @@ impl<'a, T: 'a + io::Read, P, R, E> Iterator for ParserIter<'a, T, P>
 
 /// A version of the ``ParserIter`` which will only read a certain amount of bytes befre
 /// ending iteration.
+#[derive(Debug)]
 struct LimitedParserIter<'a, T: 'a + io::Read, P> {
     buffer:    &'a mut Buffer<T>,
     parser:    P,
@@ -256,7 +266,7 @@ struct LimitedParserIter<'a, T: 'a + io::Read, P> {
 }
 
 impl<'a, T: 'a + io::Read, P, R, E> Iterator for LimitedParserIter<'a, T, P>
-  where P: Sized + FnMut(&[u8]) -> Parsed<R, E> {
+  where P: Sized + FnMut(Input<u8>) -> ParseResult<u8, R, E> {
     type Item = IterResult<R, E>;
 
     fn next(&mut self) -> Option<IterResult<R, E>> {
@@ -265,18 +275,20 @@ impl<'a, T: 'a + io::Read, P, R, E> Iterator for LimitedParserIter<'a, T, P>
         let mut parser = &mut self.parser;
 
         loop {
-            match parser(self.buffer.buffer()) {
-                Parsed::Data(consumed, data) => {
-                    self.used = consumed;
+            match parser(input::new(input::DEFAULT, self.buffer.buffer())).internal() {
+                State::Data(remainder, data) => {
+                    // TODO: Do something neater with the remainder
+                    self.used = self.buffer.buffer().len() - remainder.buffer().len();
 
                     return Some(IterResult::Data(data))
                 },
-                Parsed::Error(consumed, err) => {
-                    self.used = consumed;
+                State::Error(remainder, err) => {
+                    // TODO: Do something neater with the remainder
+                    self.used = self.buffer.buffer().len() - remainder.len();
 
                     return Some(IterResult::Error(err))
                 },
-                Parsed::Incomplete => {}
+                State::Incomplete(_) => {}
             }
 
             if self.remaining == 0 {
@@ -306,7 +318,7 @@ struct ParserBufIter<'a, T: 'a + io::Read, P> {
 }
 
 impl<'a, T: 'a + io::Read, P, R, E> Iterator for ParserBufIter<'a, T, P>
-  where P: Sized + FnMut(&[u8]) -> Parsed<R, E> {
+  where P: Sized + FnMut(Input<u8>) -> ParseResult<u8, R, E> {
     type Item = Result<R, E>;
 
     fn next(&mut self) -> Option<Result<R, E>> {
@@ -314,18 +326,20 @@ impl<'a, T: 'a + io::Read, P, R, E> Iterator for ParserBufIter<'a, T, P>
 
         let mut parser = &mut self.parser;
 
-        match parser(self.buffer.buffer()) {
-            Parsed::Data(consumed, data) => {
-                self.used = consumed;
+        match parser(input::new(input::DEFAULT, self.buffer.buffer())).internal() {
+            State::Data(remainder, data) => {
+                // TODO: Do something neater with the remainder
+                self.used = self.buffer.buffer().len() - remainder.buffer().len();
 
                 Some(Ok(data))
             },
-            Parsed::Error(consumed, err) => {
-                self.used = consumed;
+            State::Error(remainder, err) => {
+                // TODO: Do something neater with the remainder
+                self.used = self.buffer.buffer().len() - remainder.len();
 
                 Some(Err(err))
             },
-            Parsed::Incomplete => None
+            State::Incomplete(_) => None
         }
     }
 }

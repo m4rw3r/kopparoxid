@@ -22,7 +22,7 @@ impl<'a, F> Atlas<'a, F> where F: 'a + glium::backend::Facade {
 
         let tex = glium::Texture2d::empty_with_format(facade, glium::texture::UncompressedFloatFormat::U8, glium::texture::MipmapsOption::NoMipmap, width, height).unwrap();
 
-        tex.as_surface().clear(None, Some((0.0, 0.0, 0.0, 0.0)), None, None);
+        tex.as_surface().clear_color(0.0, 0.0, 0.0, 0.0);
 
         Atlas {
             context:    facade,
@@ -62,7 +62,7 @@ impl<'a, F> Atlas<'a, F> where F: 'a + glium::backend::Facade {
 
             self.texture = glium::Texture2d::empty_with_format(self.context, glium::texture::UncompressedFloatFormat::U8, glium::texture::MipmapsOption::NoMipmap, new_size.0, new_size.1).unwrap();
 
-            self.texture.as_surface().clear(None, Some((0.0, 0.0, 0.0, 0.0)), None, None);
+            self.texture.as_surface().clear_color(0.0, 0.0, 0.0, 0.0);
 
             self.texture.write(glium::Rect{
                 left:   0,

@@ -3,19 +3,26 @@ extern crate clock_ticks;
 extern crate errno;
 extern crate glutin;
 #[macro_use]
+extern crate chomp;
+#[macro_use]
 extern crate glium;
 extern crate freetype as ft;
 
 mod ctrl;
-mod parser;
 mod pty;
 mod term;
 mod gl;
 
-use gl::glyph;
 use std::io;
 use std::process;
 use std::thread;
+use std::time::Duration;
+
+use chomp::buffer::ParseError;
+use chomp::buffer::Source;
+use chomp::buffer::Stream;
+
+use gl::glyph;
 use term::color;
 
 fn main() {
@@ -39,6 +46,7 @@ fn window(mut m: pty::Fd) {
     use gl::glyph::Renderer;
     use glium::DisplayBuild;
 
+    // TODO: How to set the buffer size of the pipe here?
     m.set_noblock();
 
     let mut out = m.clone();
@@ -68,7 +76,9 @@ fn window(mut m: pty::Fd) {
 
     t.resize(((prev_bufsize.0 / cell.0) as usize, (prev_bufsize.1 / cell.1) as usize));
 
-    let mut buf = parser::Buffer::new(m, 2048, 4096);
+    let mut buf = Source::from_read(m, chomp::buffer::FixedSizeBuffer::new());
+
+    buf.set_autofill(false);
 
     loop {
         let now = clock_ticks::precise_time_ns();
@@ -79,15 +89,29 @@ fn window(mut m: pty::Fd) {
         while accumulator >= FIXED_TIME_STAMP {
             accumulator -= FIXED_TIME_STAMP;
 
-            t.pump(buf.iter(ctrl::parser)
-                      .limit_bytes(100000)
-                      // .inspect(|i| println!("{:?}", i))
-                      .inspect(|i| if let &parser::IterResult::Error(ref err)   = i { println!("Error: {}", err); })
-                      .inspect(|i| if let &parser::IterResult::IoError(ref err) = i { println!("IoError: {}", err); })
-                      .filter_map(|i| i.data())
-                      .inspect(|i| if let &ctrl::Seq::SetWindowTitle(ref title) = i {
-                          display.get_window().map(|w| w.set_title(title));
-                      }));
+            buf.fill().unwrap();
+
+            loop {
+                match buf.parse(ctrl::parser) {
+                    Ok(s) => {
+                        // println!("{:?}", s);
+
+                        if let ctrl::Seq::SetWindowTitle(ref title) = s {
+                            display.get_window().map(|w| w.set_title(title));
+                        }
+
+                        t.handle(s);
+                    },
+                    Err(ParseError::Retry)         => break,
+                    Err(ParseError::EndOfInput)    => break,
+                    // Buffer has tried to load but failed to get a complete parse anyway,
+                    // skip and render frame, wait until next frame to continue parse:
+                    Err(ParseError::Incomplete(_)) => break,
+                    Err(e)                         => {
+                        println!("{:?}", e);
+                    }
+                }
+            }
 
             for i in display.poll_events() {
                 match i {
@@ -125,6 +149,6 @@ fn window(mut m: pty::Fd) {
             }
         }
 
-        thread::sleep_ms(((FIXED_TIME_STAMP - accumulator) / 1000000) as u32);
+        thread::sleep(Duration::from_millis((FIXED_TIME_STAMP - accumulator) / 1000000));
     }
 }

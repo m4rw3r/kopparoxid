@@ -50,7 +50,7 @@ const EAGAIN: libc::c_int = libc::EAGAIN as libc::c_int;
 impl io::Read for Fd {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         unsafe {
-            match libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as libc::size_t) {
+            match libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) {
                 -1 => match errno::errno().0 {
                     EAGAIN => Ok(0),
                     _      => Err(io::Error::last_os_error())
@@ -64,7 +64,7 @@ impl io::Read for Fd {
 impl io::Write for Fd {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         unsafe {
-            match libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len() as u64) {
+            match libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len()) {
                 -1 => Err(io::Error::last_os_error()),
                 r  => Ok(r as usize),
             }
