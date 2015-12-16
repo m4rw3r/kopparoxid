@@ -18,7 +18,7 @@ use std::process;
 use std::thread;
 use std::time::Duration;
 
-use chomp::buffer::ParseError;
+use chomp::buffer::StreamError;
 use chomp::buffer::Source;
 use chomp::buffer::Stream;
 
@@ -102,11 +102,11 @@ fn window(mut m: pty::Fd) {
 
                         t.handle(s);
                     },
-                    Err(ParseError::Retry)         => break,
-                    Err(ParseError::EndOfInput)    => break,
+                    Err(StreamError::Retry)         => break,
+                    Err(StreamError::EndOfInput)    => break,
                     // Buffer has tried to load but failed to get a complete parse anyway,
                     // skip and render frame, wait until next frame to continue parse:
-                    Err(ParseError::Incomplete(_)) => break,
+                    Err(StreamError::Incomplete(_)) => break,
                     Err(e)                         => {
                         println!("{:?}", e);
                     }
