@@ -4,11 +4,13 @@ version = "0.0.1"
 authors = ["Martin Wernstål <m4rw3r@gmail.com>"]
 
 [dependencies]
-clock_ticks = "*"
-errno       = "*"
-freetype-rs = "*"
-libc        = "*"
-glutin      = "*"
-log         = "*"
-glium       = "*"
+bitflags    = "*"
 chomp       = "*"
+errno       = "*"
+time        = "*"
+freetype-rs = "*"
+glium       = "*"
+glutin      = "*"
+libc        = { git = "https://github.com/rust-lang/libc.git" }
+log         = "*"
+num         = "*"

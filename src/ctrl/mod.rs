@@ -7,11 +7,8 @@ use chomp;
 use chomp::{
     U8Result,
     Input,
+    parse_only,
     ParseResult
-};
-use chomp::buffer::{
-    Stream,
-    IntoStream,
 };
 use chomp::ascii::decimal;
 use chomp::parsers::{
@@ -42,7 +39,6 @@ pub use self::sequences::{
     Seq,
 };
 
-#[derive(Debug)]
 pub enum Error {
     CharAttrError(Vec<u8>),
     UnknownCharset(u8, Option<u8>),
@@ -56,6 +52,28 @@ pub enum Error {
     IntParseError(num::ParseIntError),
     UnexpectedUTF8Byte(u8),
     ParseError(chomp::Error<u8>),
+}
+
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use self::Error::*;
+
+        match *self {
+            UnknownCSI(c, ref data)           => write!(f, "Unknown control sequence: {:?} {:?}", c as char, String::from_utf8_lossy(data)),
+            UnknownOSC(ref data)              => write!(f, "Unknown operating system command: {:?}", String::from_utf8_lossy(data)),
+            UnknownCharset(c, None)           => write!(f, "Unknown charset sequence: {:?}", c),
+            UnknownCharset(c, Some(d))        => write!(f, "Unknown charset sequence: {:?} {:?}", c, d),
+            UnknownEscapeChar(c)              => write!(f, "Unknown escape character: {:?}", c),
+            UnknownSetReset(m)                => write!(f, "Unknown set/reset mode: {:?}", m),
+            UnknownPrivateSetReset(m)         => write!(f, "Unknown private set/reset mode: {:?}", m),
+            UnknownSetResetData(ref d)        => write!(f, "Unknown set/reset mode data: {:?}", String::from_utf8_lossy(d)),
+            UnknownPrivateSetResetData(ref d) => write!(f, "Unknown private set/reset mode data: {:?}", String::from_utf8_lossy(d)),
+            IntParseError(ref e)              => fmt::Display::fmt(e, f),
+            UnexpectedUTF8Byte(b)             => write!(f, "Unexpected UTF8 byte: {:?}", b),
+            CharAttrError(ref b)              => write!(f, "Error parsing character attribute: {:?}", String::from_utf8_lossy(b)),
+            ParseError(ref p)                 => write!(f, "Parse error: {:?}", p),
+        }
+    }
 }
 
 impl fmt::Display for Error {
@@ -153,11 +171,18 @@ fn parse_esc(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
 /// Attempts to parse a control sequence
 fn parse_csi(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
     take_till(m, |c| c >= 0x40 && c <= 0x7E).bind(|m, buf|
-         any(m).bind(|m, c| match c {
+        any(m).bind(|m, c| match c {
+            // Identify terminal
+            b'c' => return match buf.get(0) {
+                Some(&b'>') => m.ret(Seq::SendSecondaryDeviceAttributes),
+                _           => m.ret(Seq::SendPrimaryDeviceAttributes),
+            },
+            // Mode set
             b'h' => return match buf.get(0) {
                 Some(&b'?') => m.from_result(parse_private_mode(&buf[1..]).map(|a| Seq::PrivateModeSet(a))),
                 _           => m.from_result(parse_mode(buf).map(|a| Seq::ModeSet(a))),
             },
+            // Mode unset
             b'l' => return match buf.get(0) {
                 Some(&b'?')  => m.from_result(parse_private_mode(&buf[1..]).map(|a| Seq::PrivateModeReset(a))),
                 _            => m.from_result(parse_mode(buf).map(|a| Seq::ModeReset(a))),
@@ -169,18 +194,20 @@ fn parse_csi(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
             b'm' => if buf.len() == 0 {
                 m.ret(Seq::CharAttr(vec![CharAttr::Reset]))
             } else {
-                m.from_result(buf.into_stream().parse::<_, Vec<_>, _>(|i| many1(i, parse_char_attr))
+                m.from_result(parse_only(|i| many1(i, parse_char_attr), buf)
                               .map(|a| Seq::CharAttr(a))
                               .map_err(|_| Error::CharAttrError(buf.to_owned())))
             },
-            /*b'm' => return multiple_w_default(&buf[..i], parse_char_attr, CharAttr::Reset)
-                .map(|a| Seq::CharAttr(a))
-                .map_err(|_| Error::CharAttrError)
-                .inc_used(1),*/
             b'n' => match parse_int(buf) {
                 Ok(Some(6)) => m.ret(Seq::CursorPositionReport),
                 _           => m.err(Error::UnknownCSI(b'n', From::from(buf))),
             },
+            b'r' => m.from_result(parse_only(parser!{
+                    let top = option(decimal, 0);
+                    let bot = option(parser!{token(b';'); decimal()}, 0);
+
+                    ret @ _, Error: Seq::ScrollingRegion(top, bot)
+                }, buf).map_err(|_| Error::UnknownCSI(b'r', buf.to_owned()))),
             b'A' => m.from_result(parse_int(buf).map(|n| Seq::CursorUp(n.unwrap_or(1)))),
             b'B' => m.from_result(parse_int(buf).map(|n| Seq::CursorDown(n.unwrap_or(1)))),
             b'C' => m.from_result(parse_int(buf).map(|n| Seq::CursorForward(n.unwrap_or(1)))),
@@ -188,12 +215,12 @@ fn parse_csi(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
             b'E' => m.from_result(parse_int(buf).map(|n| Seq::CursorNextLine(n.unwrap_or(1)))),
             b'F' => m.from_result(parse_int(buf).map(|n| Seq::CursorPreviousLine(n.unwrap_or(1)))),
             b'G' => return m.from_result(parse_int(buf).map(|n| Seq::CursorHorizontalAbsolute(cmp::max(1, n.unwrap_or(1)) - 1))),
-            b'H' => m.from_result(buf.into_stream().parse::<_, _, Error>(parser!{
+            b'H' => m.from_result(parse_only(parser!{
                     let row = option(decimal, 1);
                     let col = option(parser!{token(b';'); decimal()}, 1);
 
-                    ret Seq::CursorPosition(cmp::max(1, row) - 1, cmp::max(1, col) - 1)
-                }).map_err(|_| Error::UnknownCSI(b'H', buf.to_owned()))),
+                    ret @ _, Error: Seq::CursorPosition(cmp::max(1, row) - 1, cmp::max(1, col) - 1)
+                }, buf).map_err(|_| Error::UnknownCSI(b'H', buf.to_owned()))),
             b'I' => m.from_result(parse_int(buf).map(|n| Seq::CursorForwardTabulation(n.unwrap_or(1)))),
             b'J' => m.ret(match parse_int(buf) {
                 Ok(Some(1)) => Seq::EraseInDisplay(EraseInDisplay::Above),
@@ -205,6 +232,7 @@ fn parse_csi(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
                 Ok(Some(2)) => Seq::EraseInLine(EraseInLine::All),
                 _           => Seq::EraseInLine(EraseInLine::Right),
             }),
+            b'M' => m.from_result(parse_int(buf).map(|n| Seq::DeleteLines(cmp::max(1, n.unwrap_or(1))))),
             b'P' => m.from_result(parse_int(buf).map(|n| Seq::DeleteCharacter(n.unwrap_or(1)))),
             b'Z' => m.from_result(parse_int(buf).map(|n| Seq::CursorBackwardsTabulation(n.unwrap_or(1)))),
             c    => m.err(Error::UnknownCSI(c, From::from(buf))),
@@ -225,12 +253,12 @@ fn parse_osc(i: Input<u8>) -> ParseResult<u8, Seq, Error> {
             let buf = if buf.last() == Some(&0x5C) { &buf[.. buf.len() - 2] } else { buf };
 
             match buf.first() {
-                Some(&b'0') => i.ret(Seq::SetWindowTitle(String::from_utf8_lossy(&buf[1..]).into_owned())), // And icon name
-                Some(&b'1') => i.ret(Seq::SetIconName(String::from_utf8_lossy(&buf[1..]).into_owned())),
-                Some(&b'2') => i.ret(Seq::SetWindowTitle(String::from_utf8_lossy(&buf[1..]).into_owned())),
-                Some(&b'3') => i.ret(Seq::SetXProps(String::from_utf8_lossy(&buf[1..]).into_owned())),
-                Some(&b'4') => i.ret(Seq::SetColorNumber(String::from_utf8_lossy(&buf[1..]).into_owned())),
-                _              => i.err(Error::UnknownOSC(From::from(buf))),
+                Some(&b'0') => i.ret(Seq::SetWindowTitle(String::from_utf8_lossy(&buf[2..]).into_owned())), // And icon name
+                Some(&b'1') => i.ret(Seq::SetIconName(String::from_utf8_lossy(&buf[2..]).into_owned())),
+                Some(&b'2') => i.ret(Seq::SetWindowTitle(String::from_utf8_lossy(&buf[2..]).into_owned())),
+                Some(&b'3') => i.ret(Seq::SetXProps(String::from_utf8_lossy(&buf[2..]).into_owned())),
+                Some(&b'4') => i.ret(Seq::SetColorNumber(String::from_utf8_lossy(&buf[2..]).into_owned())),
+                _           => i.err(Error::UnknownOSC(From::from(buf))),
             }
         }
     }
@@ -338,38 +366,45 @@ fn multiple<F, T, E>(buffer: &[u8], f: F) -> Result<Vec<T>, E>
 /// Parses a single mode attribute.
 ///
 /// Expects to receive data after the sequences ``ESC [`` but before ``h`` or ``l``.
-fn parse_mode(buffer: &[u8]) -> Result<Mode, Error> {
+fn parse_mode(buffer: &[u8]) -> Result<Vec<Mode>, Error> {
     use self::Mode::*;
 
-    match parse_int(buffer) {
-        Ok(Some(2))  => Ok(KeyboardAction),
-        Ok(Some(4))  => Ok(Insert),
-        Ok(Some(12)) => Ok(SendReceive),
-        Ok(Some(20)) => Ok(AutomaticNewline),
-        Ok(Some(n))  => Err(Error::UnknownSetReset(n)),
-        _            => Err(Error::UnknownSetResetData(buffer.to_owned())),
-    }
+    chomp::parse_only(|i| chomp::sep_by1(i, parser!{
+        let n = decimal();
+
+        i -> match n {
+            2  => i.ret(KeyboardAction),
+            4  => i.ret(Insert),
+            12 => i.ret(SendReceive),
+            20 => i.ret(AutomaticNewline),
+            n  => i.err(Error::UnknownSetReset(n)),
+        }
+    }, |i| token(i, b';')), buffer).map_err(|_| Error::UnknownSetResetData(buffer.to_owned()))
 }
 
 /// Parses a single private mode attribute.
 ///
 /// Expects to receive data after the sequences ``ESC [ ?`` but before ``h`` or ``l``.
-fn parse_private_mode(buffer: &[u8]) -> Result<PrivateMode, Error> {
+fn parse_private_mode(buffer: &[u8]) -> Result<Vec<PrivateMode>, Error> {
     use self::PrivateMode::*;
 
-    match parse_int(buffer) {
-        Ok(Some(1))    => Ok(ApplicationCursorKeys),
-        Ok(Some(7))    => Ok(Autowrap),
-        Ok(Some(8))    => Ok(Autorepeat),
-        Ok(Some(12))   => Ok(CursorBlink),
-        Ok(Some(25))   => Ok(ShowCursor),
-        Ok(Some(47))   => Ok(AlternateScreenBuffer),
-        Ok(Some(1047)) => Ok(AlternateScreenBuffer),
-        Ok(Some(1048)) => Ok(SaveCursor),
-        Ok(Some(1049)) => Ok(SaveCursorAlternateBufferClear),
-        Ok(Some(n))    => Err(Error::UnknownPrivateSetReset(n)),
-        _              => Err(Error::UnknownPrivateSetResetData(buffer.to_owned())),
-    }
+    chomp::parse_only(|i| chomp::sep_by1(i, parser!{
+        let n = decimal();
+
+        i -> match n {
+            1    => i.ret(ApplicationCursorKeys),
+            5    => i.ret(LightScreen),
+            7    => i.ret(Autowrap),
+            8    => i.ret(Autorepeat),
+            12   => i.ret(CursorBlink),
+            25   => i.ret(ShowCursor),
+            47   => i.ret(AlternateScreenBuffer),
+            1047 => i.ret(AlternateScreenBuffer),
+            1048 => i.ret(SaveCursor),
+            1049 => i.ret(SaveCursorAlternateBufferClear),
+            n    => i.err(Error::UnknownPrivateSetReset(n)),
+        }
+    }, |i| token(i, b';')), buffer).map_err(|_| Error::UnknownPrivateSetResetData(buffer.to_owned()))
 }
 
 /// Parses a single character attribute

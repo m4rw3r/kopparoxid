@@ -1,5 +1,5 @@
 
-#[derive(Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Seq {
     /* Single character functions */
     Bell,
@@ -35,10 +35,10 @@ pub enum Seq {
     SetKeypadMode(KeypadMode),
 
     /* CSI */
-    ModeSet(Mode),
-    ModeReset(Mode),
-    PrivateModeSet(PrivateMode),
-    PrivateModeReset(PrivateMode),
+    ModeSet(Vec<Mode>),
+    ModeReset(Vec<Mode>),
+    PrivateModeSet(Vec<PrivateMode>),
+    PrivateModeReset(Vec<PrivateMode>),
     CharAttr(Vec<CharAttr>),
     EraseInLine(EraseInLine),
     EraseInDisplay(EraseInDisplay),
@@ -53,7 +53,7 @@ pub enum Seq {
     /// Move the cursor up n lines, placing it in the first column (CPL).
     CursorPreviousLine(usize),
     /// Report cursor position (CPR).
-    /// 
+    ///
     /// Report format: ``ESC [ r ; c R`` where ``r`` and ``c`` are current row and column.
     CursorPositionReport,
     /// Set cursor position, zero-indexed row-column (CUP).
@@ -74,6 +74,12 @@ pub enum Seq {
     /// Characters not deleted should move to the left to fill the positions of the deleted
     /// characters, keeping their original character attributes.
     DeleteCharacter(usize),
+    /// Delete n lines, default = 1.
+    DeleteLines(usize),
+    /// Sets the scrolling region (top, bottom), defaults to whole window.
+    ScrollingRegion(usize, usize),
+    SendPrimaryDeviceAttributes,
+    SendSecondaryDeviceAttributes,
     /* OSC */
     SetWindowTitle(String),
     SetIconName(String),
@@ -81,22 +87,22 @@ pub enum Seq {
     SetColorNumber(String),
 }
 
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum KeypadMode {
     Numeric,
     Application,
 }
 
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum PrivateMode {
     /// Application Cursor Keys (DECCKM).
-    /// 
+    ///
     /// * If the DECCKM function is set, then the arrow keys send application sequences to the host.
     /// * If the DECCKM function is reset, then the arrow keys send ANSI cursor sequences to the host.
     ApplicationCursorKeys,
     /// Sets/clears the key-repeat, when set keys are to be repeated after 0.5 seconds until key is
     /// released (DECARM).
-    /// 
+    ///
     /// Default: repeat (set).
     Autorepeat,
     /// Sets/clears the automatic wrapping of the cursor when it reaches the end of a line (DECAWM)
@@ -104,8 +110,12 @@ pub enum PrivateMode {
     /// Default: No-autowrap (not set).
     Autowrap,
     /// Start/stop blinking cursor, att610
+    ///
+    /// Default: on
     CursorBlink,
+    /// Default: on
     ShowCursor,
+    /// Default: off
     AlternateScreenBuffer,
     /// Save cursor as in DECSC
     SaveCursor,
@@ -113,11 +123,16 @@ pub enum PrivateMode {
     ///
     /// This combines ``AlternateScreenBuffer`` and ``SaveCursor``.
     SaveCursorAlternateBufferClear,
+    /// If set the background is light with dark letters, if not set background is dark with light
+    /// letters.
+    ///
+    /// Default: off
+    LightScreen,
     /// Represents an unknown PrivateMode
     Unknown(u32),
 }
 
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Mode {
     /// AM
     KeyboardAction,
@@ -129,21 +144,21 @@ pub enum Mode {
     AutomaticNewline,
 }
 
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum EraseInLine {
     Left,
     Right,
     All,
 }
 
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum EraseInDisplay {
     Above,
     Below,
     All,
 }
 
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CharType {
     Normal,
     Bold,
@@ -158,7 +173,7 @@ pub enum CharType {
     DoublyUnderlined,
 }
 
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Color {
     Black,
     Red,
@@ -179,7 +194,7 @@ impl Default for Color {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CharAttr {
     Reset,
     Set(CharType),
@@ -188,7 +203,7 @@ pub enum CharAttr {
     BGColor(Color),
 }
 
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Charset {
     DECSpecialAndLineDrawing,
     DECSupplementary,
@@ -210,7 +225,7 @@ pub enum Charset {
     // Unicode,
 }
 
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CharsetIndex {
     G0,
     G1,

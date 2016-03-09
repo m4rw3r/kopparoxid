@@ -4,16 +4,17 @@ use std::ffi;
 use std::io;
 use std::process;
 use std::ptr;
+use std::env;
 
-#[link(name = "util")]
-extern {
-    fn openpty(master: *mut libc::c_int, slave: *mut libc::c_int, name: *const u8, termp: *const u8, winp: *const u8) -> libc::c_int;
-}
+use util::Coord;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Fd {
    fd: libc::c_int
 }
+
+// OS X:
+const TIOCSWINSZ: libc::c_ulong = 2148037735;
 
 impl Fd {
     /// Overrides the specified file-descriptor given with the
@@ -21,6 +22,23 @@ impl Fd {
     pub fn override_fd(&self, fd: libc::c_int) -> io::Result<()> {
         unsafe {
             match libc::dup2(self.fd, fd) {
+                -1 => Err(io::Error::last_os_error()),
+                _  => Ok(()),
+            }
+        }
+    }
+
+    /// Sets the window-size
+    pub fn set_window_size(&mut self, term: Coord<usize>, pixels: Coord<usize>) -> io::Result<()> {
+        unsafe {
+            let ws = libc::winsize {
+                ws_row:    term.row as libc::c_ushort,
+                ws_col:    term.col as libc::c_ushort,
+                ws_xpixel: pixels.row as libc::c_ushort,
+                ws_ypixel: pixels.col as libc::c_ushort,
+            };
+
+            match libc::ioctl(self.fd, TIOCSWINSZ, &ws) {
                 -1 => Err(io::Error::last_os_error()),
                 _  => Ok(()),
             }
@@ -82,8 +100,15 @@ pub fn open() -> io::Result<(Fd, Fd)> {
     let mut m: libc::c_int = 0;
     let mut s: libc::c_int = 0;
 
+    let mut ws = libc::winsize {
+        ws_row:    0,
+        ws_col:    0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+
     unsafe {
-        match openpty(&mut m, &mut s, ptr::null(), ptr::null(), ptr::null()) {
+        match libc::openpty(&mut m, &mut s, ptr::null_mut(), ptr::null_mut(), &mut ws) {
             -1 => Err(io::Error::last_os_error()),
             _  => Ok((Fd{fd: m}, Fd{fd: s}))
         }
@@ -108,9 +133,17 @@ pub fn run_sh(m: Fd, s: Fd) -> ! {
     /* Get rid of the master fd before running the shell */
     drop(m);
 
+    unsafe { libc::setsid() };
+
     s.override_fd(libc::STDIN_FILENO).unwrap();
     s.override_fd(libc::STDOUT_FILENO).unwrap();
     s.override_fd(libc::STDERR_FILENO).unwrap();
+
+    env::remove_var("COLUMNS");
+    env::remove_var("LINES");
+    env::remove_var("TERMCAP");
+
+    env::set_var("TERM", "xterm-256color");
 
     /* This will never return unless the shell command exits with error */
     print!("{}", execvp("zsh", &["-i"]));
