@@ -1,5 +1,7 @@
 use ft;
-use glium;
+use glium::{Texture2d, Rect};
+use glium::backend::Facade;
+use glium::texture::{ClientFormat, MipmapsOption, PixelValue, RawImage2d, UncompressedFloatFormat};
 use gl;
 use std::cmp;
 use std::fmt;
@@ -34,7 +36,9 @@ fn monochrome_to_grayscale(bitmap: &ft::bitmap::Bitmap) -> Vec<u8> {
 #[derive(Debug)]
 pub enum Error {
     FtError(ft::Error),
-    MissingMetrics(usize)
+    MissingMetrics(usize),
+    UnknownRenderer,
+    DuplicateRendererKey,
 }
 
 impl From<ft::Error> for Error {
@@ -47,7 +51,9 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Error::FtError(err) => err.fmt(f),
-            Error::MissingMetrics(glyph) => write!(f, "glyph {} is missing metrics", glyph)
+            Error::MissingMetrics(glyph) => write!(f, "glyph {} is missing metrics", glyph),
+            Error::UnknownRenderer => write!(f, "unkown render key"),
+            Error::DuplicateRendererKey => write!(f, "key already exists"),
         }
     }
 }
@@ -72,17 +78,17 @@ pub struct Metrics {
 #[derive(Debug, Copy, Clone)]
 struct GlyphData {
     padding:  Padding,
-    tex_rect: glium::Rect,
+    tex_rect: Rect,
 }
 
 /// Trait for rendering glyphs to 2D-textures.
-pub trait Renderer<P: glium::texture::PixelValue + Clone> {
-    fn render<F>(&mut self, glyph: usize, f: F) -> Result<(), Error>
-      where F: FnOnce(glium::texture::RawImage2d<P>, Padding) -> Result<(), Error>;
+pub trait Renderer<P: PixelValue + Clone>: fmt::Debug {
+    fn render(&mut self, glyph: usize, f: &mut FnMut(RawImage2d<P>, Padding) -> Result<(), Error>) -> Result<(), Error>;
     /// Returns the (width, height) of a glyph cell in pixels.
     fn cell_size(&self) -> (u32, u32);
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum FreeTypeMode{
     Monochrome,
     Greyscale
@@ -93,6 +99,12 @@ pub struct FreeType<'a> {
     ft_face:     ft::Face<'a>,
     render_mode: FreeTypeMode,
     glyphsize:   (u32, u32)
+}
+
+impl<'a> fmt::Debug for FreeType<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "FreeType({:?}, {:?})", self.render_mode, self.glyphsize)
+    }
 }
 
 /// Truncates a freetype 16.6 fixed-point values to the integer value.
@@ -116,14 +128,15 @@ impl<'a> FreeType<'a> {
 }
 
 impl<'a> Renderer<u8> for FreeType<'a> {
-    fn render<F>(&mut self, glyph: usize, f: F) -> Result<(), Error>
-      where F: FnOnce(glium::texture::RawImage2d<u8>, Padding) -> Result<(), Error> {
+    fn render(&mut self, glyph: usize, f: &mut FnMut(RawImage2d<u8>, Padding) -> Result<(), Error>) -> Result<(), Error> {
         use std::borrow::Cow;
-        use glium::texture;
 
         let target = match self.render_mode {
+            // This is antialiasing off (TARGET_MONO):
             FreeTypeMode::Monochrome => ft::face::RENDER | ft::face::TARGET_MONO,
-            FreeTypeMode::Greyscale  => ft::face::RENDER,
+            // TODO: Setting for hinting (includes autohint, ie. Hint, LightHint, Autohint, None)
+            // TODO: Setting for antialias
+            FreeTypeMode::Greyscale  => ft::face::RENDER | ft::face::FORCE_AUTOHINT,
         };
 
         try!(self.ft_face.load_char(glyph, target));
@@ -146,11 +159,11 @@ impl<'a> Renderer<u8> for FreeType<'a> {
             FreeTypeMode::Greyscale  => Cow::Borrowed(glyph_bitmap.buffer()),
         };
 
-        f(texture::RawImage2d{
+        f(RawImage2d{
             data:   texdata,
             width:  glyph_bitmap.width() as u32,
             height: glyph_bitmap.rows()  as u32,
-            format: texture::ClientFormat::U8
+            format: ClientFormat::U8
         },
         Padding{
             left:   left   as u32,
@@ -166,48 +179,63 @@ impl<'a> Renderer<u8> for FreeType<'a> {
 }
 
 #[derive(Debug)]
-pub struct Map<'a, F, R>
-  where F: 'a + glium::backend::Facade, R: 'a + Renderer<u8> {
-    renderer: R,
-    glyphs:   collections::BTreeMap<usize, GlyphData>,
-    atlas:    gl::Atlas<'a, F>
+pub struct Map<'a, F, K>
+  where F: 'a + Facade,
+        K: Clone + Ord {
+    renderers: collections::BTreeMap<K, Box<Renderer<u8> + 'a>>,
+    glyphs:    collections::BTreeMap<(K, usize), GlyphData>,
+    atlas:     Atlas<'a, F>
 }
 
-impl<'a, F, R> Map<'a, F, R>
-  where F: 'a + glium::backend::Facade, R: 'a + Renderer<u8> {
-    pub fn new(display: &'a F, renderer: R) -> Self {
-        Map::new_with_size(display, renderer, 1000)
+impl<'a, F, K> Map<'a, F, K>
+  where F: 'a + Facade,
+        K: Clone + Ord {
+    pub fn new(display: &'a F) -> Self {
+        Map::new_with_size(display, 1000)
     }
 
-    pub fn new_with_size(display: &'a F, renderer: R, atlas_size: u32) -> Self {
+    pub fn new_with_size(display: &'a F, atlas_size: u32) -> Self {
         Map {
-            renderer: renderer,
-            glyphs:   collections::BTreeMap::new(),
-            atlas:    gl::Atlas::new(display, atlas_size, atlas_size),
+            renderers: collections::BTreeMap::new(),
+            glyphs:    collections::BTreeMap::new(),
+            atlas:     Atlas::new(display, atlas_size, atlas_size),
         }
     }
 
-    pub fn load(&mut self, glyph: usize) -> Result<(), Error> {
-        let mut renderer = &mut self.renderer;
-        let glyphs   = &mut self.glyphs;
-        let atlas    = &mut self.atlas;
+    pub fn add_renderer(&mut self, render_key: K, renderer: Box<Renderer<u8> + 'a>) -> Result<(), Error> {
+        if self.renderers.contains_key(&render_key) {
+            return Err(Error::DuplicateRendererKey);
+        }
 
-        if glyphs.contains_key(&glyph) {
+        self.renderers.insert(render_key, renderer);
+
+        Ok(())
+    }
+
+    pub fn load(&mut self, render_key: K, glyph: usize) -> Result<(), Error> {
+        let glyphs       = &mut self.glyphs;
+        let atlas        = &mut self.atlas;
+
+        if glyphs.contains_key(&(render_key.clone(), glyph)) {
             return Ok(())
         }
 
-        renderer.render(glyph, |texture, padding| {
-            let r = atlas.add(texture);
+        self.renderers.get_mut(&render_key)
+            .ok_or(Error::UnknownRenderer)
+            .and_then(|mut r|
+            r.render(glyph, &mut move |texture, padding| {
+                let r = atlas.add(texture);
 
-            glyphs.insert(glyph, GlyphData { padding: padding, tex_rect: r });
+                glyphs.insert((render_key.clone(), glyph), GlyphData { padding: padding, tex_rect: r });
 
-            Ok(())
-        })
+                Ok(())
+            })
+        )
     }
 
     /// Retrieves a specific glyph if it exists.
-    pub fn get<'b>(&'b self, glyph: usize) -> Option<Glyph<'b>> {
-        self.glyphs.get(&glyph).map(|d| {
+    pub fn get<'b>(&'b self, render_key: K, glyph: usize) -> Option<Glyph<'b>> {
+        self.glyphs.get(&(render_key, glyph)).map(|d| {
             let g               = d.tex_rect;
             let (width, height) = self.atlas.texture_size();
 
@@ -226,8 +254,21 @@ impl<'a, F, R> Map<'a, F, R>
         })
     }
 
-    pub fn texture(&self) -> &glium::Texture2d {
+    pub fn texture(&self) -> &Texture2d {
         self.atlas.texture()
+    }
+
+    pub fn cell_size(&self) -> (u32, u32) {
+        let mut size = (0, 0);
+
+        for v in self.renderers.values() {
+            let c = v.cell_size();
+
+            size.0 = cmp::max(size.0, c.0);
+            size.1 = cmp::max(size.1, c.1);
+        }
+
+        size
     }
 }
 
@@ -260,7 +301,7 @@ pub struct Glyph<'a> {
 
 impl<'a> Glyph<'a> {
     /// Returns a list of vertices for two triangles making up the quad for this texture.
-    /// 
+    ///
     /// ``p`` is the position of the lower-left corner of the quad, ``s`` is the width and
     /// height of the quad. ``rgb`` is the foreground RGB color.
     pub fn vertices(&self, p: (f32, f32), s: (f32, f32), rgb: [f32; 3]) -> [TexturedVertex; 6] {
@@ -279,5 +320,98 @@ impl<'a> Glyph<'a> {
             TexturedVertex { xy: [r, b], rgb: rgb, st: [self.right, self.top   ] },
             TexturedVertex { xy: [l, b], rgb: rgb, st: [self.left,  self.top   ] },
         ]
+    }
+}
+
+/// The growth factor for the atlas.
+const ATLAS_GROWTH_FACTOR: u32 = 2;
+
+#[derive(Debug)]
+pub struct Atlas<'a, F> where F: 'a + Facade {
+    context:    &'a F,
+    used:       (u32, u32),
+    row_height: u32,
+    texture:    Texture2d,
+}
+
+/// Somewhat basic automatically resizing texture-atlas.
+impl<'a, F> Atlas<'a, F> where F: 'a + Facade {
+    pub fn new(facade: &'a F, width: u32, height: u32) -> Self {
+        use glium::Surface;
+
+        // FIXME: Return Result instead
+        let tex = Texture2d::empty_with_format(facade, UncompressedFloatFormat::U8, MipmapsOption::NoMipmap, width, height).unwrap();
+
+        tex.as_surface().clear_color(0.0, 0.0, 0.0, 0.0);
+
+        Atlas {
+            context:    facade,
+            used:       (0, 0),
+            row_height: 0,
+            texture:    tex,
+        }
+    }
+
+    pub fn add<P: PixelValue + Clone>(&mut self, raw: RawImage2d<P>) -> Rect {
+        let cur_size     = (self.texture.get_width(), self.texture.get_height().unwrap_or(1));
+        let mut new_size = cur_size;
+
+        // Extend width if necessary
+        while raw.width > new_size.0 {
+            new_size.0 = new_size.0 * ATLAS_GROWTH_FACTOR;
+        }
+
+        // Have we used up this row? If so, end it and create a new one
+        if self.used.0 + raw.width > new_size.0 {
+            self.used.0     = 0;
+            self.used.1     = self.used.1 + self.row_height;
+            self.row_height = 0;
+        }
+
+        // Extend height if necessary
+        while self.used.1 + raw.height > new_size.1 {
+            new_size.1 = new_size.1 * ATLAS_GROWTH_FACTOR;
+        }
+
+        if cur_size != new_size {
+            use glium::Surface;
+
+            let img: Vec<_> = self.texture.read();
+            let h           = self.texture.get_height().unwrap_or(1);
+            let w           = self.texture.get_width();
+
+            self.texture = Texture2d::empty_with_format(self.context, UncompressedFloatFormat::U8, MipmapsOption::NoMipmap, new_size.0, new_size.1).unwrap();
+
+            self.texture.as_surface().clear_color(0.0, 0.0, 0.0, 0.0);
+
+            self.texture.write(Rect{
+                left:   0,
+                bottom: 0,
+                height: h,
+                width:  w,
+            }, img);
+        }
+
+        let r = Rect{
+            left:   self.used.0,
+            bottom: self.used.1,
+            height: raw.height,
+            width:  raw.width,
+        };
+
+        self.texture.write(r, raw);
+
+        self.used.0     = self.used.0 + r.width;
+        self.row_height = cmp::max(self.row_height, r.height);
+
+        r
+    }
+
+    pub fn texture(&self) -> &Texture2d {
+        &self.texture
+    }
+
+    pub fn texture_size(&self) -> (u32, u32) {
+        (self.texture.get_width(), self.texture.get_height().unwrap_or(1))
     }
 }

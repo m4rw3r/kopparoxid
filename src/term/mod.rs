@@ -26,7 +26,7 @@ pub mod char_mode {
     }
 }
 
-use self::char_mode::CharMode;
+pub use self::char_mode::CharMode;
 
 #[derive(Copy, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Character {
@@ -48,10 +48,8 @@ pub trait Cell {
     fn fg(&self) -> ctrl::Color;
     /// Returns the backgroudn color to use.
     fn bg(&self) -> ctrl::Color;
-    /// Returns true if the glyph is to be rendered as bold
-    fn bold(&self) -> bool;
-    /// Returns true if the glyph is to be rendered as italic
-    fn italic(&self) -> bool;
+    /// Returns the character attributes for this cell
+    fn attrs(&self) -> CharMode;
 }
 
 bitflags!{
@@ -98,7 +96,7 @@ pub trait Display {
     ///
     /// TODO: When iterators can properly be returned from functions, use an iterator instead of
     /// the closure.
-    fn glyphs<F>(&self, mut f: F) where F: Sized + FnMut(usize);
+    fn glyphs<F>(&self, mut f: F) where F: Sized + FnMut(usize, CharMode);
     /// Iterates all the cells to be displayed for the content and calls the provided closure
     /// for each cell.
     ///
@@ -111,10 +109,10 @@ pub trait Display {
 
 impl Display for Term {
     fn glyphs<F>(&self, mut f: F)
-      where F: Sized + FnMut(usize) {
+      where F: Sized + FnMut(usize, CharMode) {
         for r in self.data.iter() {
             for c in r.iter().filter(|c| c.glyph != 0) {
-                f(c.glyph)
+                f(c.glyph, c.attrs)
             }
         }
     }
@@ -153,14 +151,8 @@ impl Display for Term {
                 if self.attrs.contains(INVERSE) { self.fg } else { self.bg }
             }
 
-            // TODO: Implement
-            fn bold(&self) -> bool {
-                self.attrs.contains(BOLD)
-            }
-
-            // TODO: Implement
-            fn italic(&self) -> bool {
-                self.attrs.contains(ITALIC)
+            fn attrs(&self) -> CharMode {
+                self.attrs
             }
         }
 

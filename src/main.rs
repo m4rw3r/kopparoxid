@@ -32,13 +32,16 @@ use term::color;
 use util::Coord;
 
 fn main() {
-    let (m, s) = pty::open().unwrap();
+    let (mut m, s) = pty::open().unwrap();
 
     match unsafe { libc::fork() } {
         -1  => panic!(io::Error::last_os_error()),
         0   => pty::run_sh(m, s),
         pid => {
             println!("master, child pid: {}", pid);
+
+            // TODO: How to set the buffer size of the pipe here?
+            m.set_noblock();
 
             window(m, pid)
         }
@@ -47,12 +50,20 @@ fn main() {
 
 const FONT_SIZE: u32 = 16;
 
+
+fn load_font(f: &mut ft::Library, path: &str) -> Box<glyph::Renderer<u8>> {
+    let ft_face = f.new_face(path, 0).unwrap();
+
+    ft_face.set_pixel_sizes(0, FONT_SIZE).unwrap();
+
+    // TODO: Antialiasing settings
+    Box::new(glyph::FreeType::new(ft_face, glyph::FreeTypeMode::Greyscale))
+}
+
 fn window(mut m: pty::Fd, child_pid: libc::c_int) {
     use gl::glyph::Renderer;
     use glium::DisplayBuild;
-
-    // TODO: How to set the buffer size of the pipe here?
-    m.set_noblock();
+    use gl::term::FontStyle;
 
     let mut out = m.clone();
     let display = glutin::WindowBuilder::new()
@@ -60,16 +71,24 @@ fn window(mut m: pty::Fd, child_pid: libc::c_int) {
         .build_glium()
         .unwrap();
 
-    let ft_lib  = ft::Library::init().unwrap();
-    let ft_face = ft_lib.new_face("./DejaVuSansMono/DejaVu Sans Mono for Powerline.ttf", 0).unwrap();
+    let faces = [
+        (FontStyle::Regular,    "./DejaVuSansMono/DejaVu Sans Mono for Powerline.ttf"),
+        (FontStyle::Bold,       "./DejaVuSansMono/DejaVu Sans Mono Bold for Powerline.ttf"),
+        (FontStyle::Italic,     "./DejaVuSansMono/DejaVu Sans Mono Oblique for Powerline.ttf"),
+        (FontStyle::BoldItalic, "./DejaVuSansMono/DejaVu Sans Mono Bold Oblique for Powerline.ttf"),
+    ];
 
-    ft_face.set_pixel_sizes(0, FONT_SIZE).unwrap();
+    let mut ft_lib = ft::Library::init().unwrap();
+    let mut f_map  = glyph::Map::new(&display);
 
-    let glyph_renderer = glyph::FreeType::new(ft_face, glyph::FreeTypeMode::Greyscale);
-    let cell           = glyph_renderer.cell_size();
+    for &(f, t) in &faces {
+        f_map.add_renderer(f, load_font(&mut ft_lib, t)).unwrap();
+    }
+
+    let cell = f_map.cell_size();
 
     let mut t = term::Term::new_with_size(Coord { col: 10, row: 10});
-    let mut g = gl::term::GlTerm::new(&display, color::XtermDefault, glyph_renderer).unwrap();
+    let mut g = gl::term::GlTerm::new(&display, color::XtermDefault, f_map).unwrap();
 
     display.get_window().map(|w| w.set_title("Kopparoxid"));
 
@@ -88,14 +107,14 @@ fn window(mut m: pty::Fd, child_pid: libc::c_int) {
     t.resize(tsize);
 
     // TODO: Merge with SIGWINCH
-    m.set_window_size(tsize, Coord {
+    out.set_window_size(tsize, Coord {
         col: prev_bufsize.0 as usize,
         row: prev_bufsize.1 as usize,
     }).unwrap();
 
-    unsafe { libc::kill(-1, libc::SIGWINCH) };
+    unsafe { libc::kill(-child_pid, libc::SIGWINCH) };
 
-    let mut buf = Source::from_read(m.clone(), chomp::buffer::FixedSizeBuffer::new());
+    let mut buf = Source::from_read(m, chomp::buffer::FixedSizeBuffer::new());
 
     buf.set_autofill(false);
 
@@ -171,16 +190,16 @@ fn window(mut m: pty::Fd, child_pid: libc::c_int) {
 
                 t.resize(tsize);
 
-                m.set_window_size(tsize, Coord {
+                out.set_window_size(tsize, Coord {
                     col: buf_size.0 as usize,
                     row: buf_size.1 as usize,
                 }).unwrap();
 
-                unsafe { libc::kill(-1, libc::SIGWINCH) };
+                unsafe { libc::kill(-child_pid, libc::SIGWINCH) };
             }
 
             if t.is_dirty() {
-                t.write_output(&mut m).unwrap();
+                t.write_output(&mut out).unwrap();
 
                 let mut target = display.draw();
 
@@ -194,4 +213,8 @@ fn window(mut m: pty::Fd, child_pid: libc::c_int) {
 
         thread::sleep(Duration::from_millis((FIXED_TIME_STAMP - accumulator) / 1000000));
     }
+}
+
+struct Window {
+    child_pid: libc::c_int,
 }

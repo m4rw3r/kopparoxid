@@ -14,7 +14,11 @@ pub struct Fd {
 }
 
 // OS X:
-const TIOCSWINSZ: libc::c_ulong = 2148037735;
+// TODO: Add to libc crate
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const TIOCSWINSZ: libc::c_ulong = 0x80087467;
+#[cfg(not(any(target_os ="macos", target_os = "ios")))]
+use libc::TIOCSWINSZ;
 
 impl Fd {
     /// Overrides the specified file-descriptor given with the

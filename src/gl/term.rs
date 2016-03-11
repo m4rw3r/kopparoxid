@@ -16,15 +16,37 @@ struct ColoredVertex {
 
 implement_vertex!(ColoredVertex, xy, rgb);
 
+#[derive(Debug, Clone, Copy, Hash, Ord, PartialOrd, Eq, PartialEq)]
+pub enum FontStyle {
+    Regular,
+    Bold,
+    Italic,
+    BoldItalic,
+}
+
+impl From<term::CharMode> for FontStyle {
+    fn from(m: term::CharMode) -> Self {
+        use term::char_mode::*;
+
+        match (m.contains(BOLD), m.contains(ITALIC)) {
+            (true, true)   => FontStyle::BoldItalic,
+            (true, false)  => FontStyle::Bold,
+            (false, true)  => FontStyle::Italic,
+            (false, false) => FontStyle::Regular,
+        }
+    }
+}
+
+pub type Renderer<'a> = glyph::Renderer<u8> + 'a;
+
 /// Structure used to render a Term instance onto a GL surface
-pub struct GlTerm<'a, F, R, C>
+pub struct GlTerm<'a, F, C>
   where F: 'a + glium::backend::Facade,
-        R: 'a + glyph::Renderer<u8>,
         C: 'a + color::Manager {
     /// OpenGl render context
     context:   Rc<glium::backend::Context>,
-    /// Map and texture for storing rendered glyphs
-    glyphs:    glyph::Map<'a, F, R>,
+    /// Map and texture for storing rendered regular glyphs
+    glyphs:    glyph::Map<'a, F, FontStyle>,
     /// Vertex buffer for foreground text cells
     fg_buffer: Vec<glyph::TexturedVertex>,
     /// Vertex buffer for background cells
@@ -39,13 +61,13 @@ pub struct GlTerm<'a, F, R, C>
     cellsize:  (f32, f32),
 }
 
-impl<'a, F, R, C> GlTerm<'a, F, R, C>
+impl<'a, F, C> GlTerm<'a, F, C>
   where F: 'a + glium::backend::Facade,
-        R: 'a + glyph::Renderer<u8>,
         C: 'a + color::Manager {
-    pub fn new(display: &'a F, colors: C, glyph_renderer: R) -> Result<Self, glium::program::ProgramChooserCreationError> {
-        use gl::glyph::Renderer;
-
+    pub fn new(display:   &'a F,
+               colors:    C,
+               glyph_map: glyph::Map<'a, F, FontStyle>)
+        -> Result<Self, glium::program::ProgramChooserCreationError> {
         let fg_shader = try!(program!(display,
             410 => {
                 outputs_srgb: true,
@@ -109,11 +131,11 @@ impl<'a, F, R, C> GlTerm<'a, F, R, C>
             },
         ));
 
-        let cellsize = glyph_renderer.cell_size();
+        let cellsize = glyph_map.cell_size();
 
         Ok(GlTerm {
             context:   display.get_context().clone(),
-            glyphs:    glyph::Map::new(display, glyph_renderer),
+            glyphs:    glyph_map,
             fg_buffer: Vec::new(),
             bg_buffer: Vec::new(),
             fg_shader: fg_shader,
@@ -124,7 +146,22 @@ impl<'a, F, R, C> GlTerm<'a, F, R, C>
     }
 
     fn load_glyphs(&mut self, t: &term::Term) {
-        t.glyphs(|g| self.glyphs.load(g).unwrap() )
+        t.glyphs(|g, m| {
+            let t = m.into();
+
+            self.glyphs.load(t, g).or_else(|e|
+                if t != FontStyle::Regular {
+                    // Fall back to regular font
+                    // TODO: Logging
+                    self.glyphs.load(FontStyle::Regular, g)
+                } else {
+                    Err(e)
+                }).unwrap()
+        })
+    }
+
+    fn get_glyph(&self, f: FontStyle, chr: usize) -> Option<glyph::Glyph> {
+        self.glyphs.get(f, chr).or_else(|| self.glyphs.get(FontStyle::Regular, chr))
     }
 
     fn load_bg_vertices(&mut self, t: &term::Term, scale: (f32, f32), offset: (f32, f32)) {
@@ -155,17 +192,18 @@ impl<'a, F, R, C> GlTerm<'a, F, R, C>
         self.fg_buffer.truncate(0);
 
         t.cells(|c| {
-            if let Some(g) = self.glyphs.get(c.glyph()) {
+            self.get_glyph(c.attrs().into(), c.glyph()).map(|g| {
                 let fg       = self.colors.fg(c.fg());
                 let left     = offset.0 + (c.col() as f32 * cellsize.0 + g.metrics.padding.left as f32) * scale.0;
                 let bottom   = offset.1 - ((c.row() + 1) as f32 * cellsize.1 - g.metrics.padding.bottom as f32) * scale.1;
                 let charsize = (g.metrics.width as f32 * scale.0, g.metrics.height as f32 * scale.1);
-                let vs       = g.vertices((left, bottom), charsize, fg);
 
+                g.vertices((left, bottom), charsize, fg)
+            }).map(|vs| {
                 for v in vs.into_iter() {
                     self.fg_buffer.push(*v);
                 }
-            }
+            });
         })
     }
 
