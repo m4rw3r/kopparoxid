@@ -31,11 +31,39 @@ fn to_color<F>(c: ctrl::Color, default: [f32; 3], f: F) -> [f32; 3]
     }
 }
 
+fn rgb2float(x: u32) -> [f32; 3] {
+    [
+        (((x & 0xff0000) >> 16) as f32) / 255.0,
+        (((x & 0x00ff00) >> 8)  as f32) / 255.0,
+        ((x & 0x0000ff)  as f32) / 255.0,
+    ]
+}
+
+
 /// Yields the default xterm palette
 fn xterm_palette(c: u8) -> [f32; 3] {
     match c {
+
+// *.cursorColor:  #aeafad
+0  => rgb2float(0x000000),
+1  => rgb2float(0xcc6666),
+2  => rgb2float(0xb5bd68),
+3  => rgb2float(0xde935f),
+4  => rgb2float(0x81a2be),
+5  => rgb2float(0xb294bb),
+6  => rgb2float(0x8abeb7),
+7  => rgb2float(0x373b41),
+8  => rgb2float(0x666666),
+9  => rgb2float(0xFF3334),
+10 => rgb2float(0x9ec400),
+11 => rgb2float(0xf0c674),
+12 => rgb2float(0x81a2be),
+13 => rgb2float(0xb777e0),
+14 => rgb2float(0x54ced6),
+15 => rgb2float(0x282a2e),
+
         // TODO: Make a configurable version of this
-        0  => [0.0, 0.0, 0.0],
+        /*0  => [0.0, 0.0, 0.0],
         1  => [0.5, 0.0, 0.0],
         2  => [0.0, 0.5, 0.0],
         3  => [0.5, 0.5, 0.0],
@@ -50,7 +78,7 @@ fn xterm_palette(c: u8) -> [f32; 3] {
         12 => [0.0, 0.0, 1.0],
         13 => [1.0, 0.0, 1.0],
         14 => [0.0, 1.0, 1.0],
-        15 => [1.0, 1.0, 1.0],
+        15 => [1.0, 1.0, 1.0],*/
         c if c < 232 => {
             // 6x6x6 color cube from 16-231, indices 0-6
             let blue  = (c - 16) % 6;
@@ -77,15 +105,18 @@ pub struct XtermDefault;
 
 impl Manager for XtermDefault {
     fn fg(&self, color: ctrl::Color) -> [f32; 3] {
-        to_color(color, [0.0, 0.0, 0.0], xterm_palette)
+        to_color(color, rgb2float(0xc5c8c6), xterm_palette)
+        //to_color(color, [0.0, 0.0, 0.0], xterm_palette)
     }
 
     fn bg(&self, color: ctrl::Color) -> [f32; 3] {
-        to_color(color, [1.0, 1.0, 1.0], xterm_palette)
+        to_color(color, rgb2float(0x1d1f21), xterm_palette)
+        //to_color(color, [1.0, 1.0, 1.0], xterm_palette)
     }
 
     fn fill(&self) -> [f32; 3] {
-        [1.0, 1.0, 1.0]
+        rgb2float(0x1d1f21)
+        //[1.0, 1.0, 1.0]
     }
 }
 
