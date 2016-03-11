@@ -20,7 +20,7 @@ use chomp::parsers::{
 };
 use chomp::combinators::{
     option,
-    many1
+    sep_by1,
 };
 
 mod sequences;
@@ -194,7 +194,8 @@ fn parse_csi(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
             b'm' => if buf.len() == 0 {
                 m.ret(Seq::CharAttr(vec![CharAttr::Reset]))
             } else {
-                m.from_result(parse_only(|i| many1(i, parse_char_attr), buf)
+                // TODO: Check for empty buf at end?
+                m.from_result(parse_only(|i| sep_by1(i, parse_char_attr, |i| token(i, b';')), buf)
                               .map(|a| Seq::CharAttr(a))
                               .map_err(|_| Error::CharAttrError(buf.to_owned())))
             },
@@ -302,7 +303,7 @@ fn parse_charset(m: Input<u8>, index: CharsetIndex) -> ParseResult<u8, Seq, Erro
 fn parse_mode(buffer: &[u8]) -> Result<Vec<Mode>, Error> {
     use self::Mode::*;
 
-    chomp::parse_only(|i| chomp::sep_by1(i, parser!{
+    chomp::parse_only(|i| sep_by1(i, parser!{
         let n = decimal();
 
         i -> match n {
@@ -321,7 +322,7 @@ fn parse_mode(buffer: &[u8]) -> Result<Vec<Mode>, Error> {
 fn parse_private_mode(buffer: &[u8]) -> Result<Vec<PrivateMode>, Error> {
     use self::PrivateMode::*;
 
-    chomp::parse_only(|i| chomp::sep_by1(i, parser!{
+    chomp::parse_only(|i| sep_by1(i, parser!{
         let n = decimal();
 
         i -> match n {
@@ -371,23 +372,23 @@ fn parse_char_attr(i: Input<u8>) -> U8Result<CharAttr> {
         27       => i.ret(Unset(Inverse)),
         28       => i.ret(Unset(Invisible)),
         29       => i.ret(Unset(CrossedOut)),
-        30 | 90  => i.ret(FGColor(Black)),
-        31 | 91  => i.ret(FGColor(Red)),
-        32 | 92  => i.ret(FGColor(Green)),
-        33 | 93  => i.ret(FGColor(Yellow)),
-        34 | 94  => i.ret(FGColor(Blue)),
-        35 | 95  => i.ret(FGColor(Magenta)),
-        36 | 96  => i.ret(FGColor(Cyan)),
-        37 | 97  => i.ret(FGColor(White)),
-        39 | 99  => i.ret(FGColor(Default)),
-        40 | 100 => i.ret(BGColor(Black)),
-        41 | 101 => i.ret(BGColor(Red)),
-        42 | 102 => i.ret(BGColor(Green)),
-        43 | 103 => i.ret(BGColor(Yellow)),
-        44 | 104 => i.ret(BGColor(Blue)),
-        45 | 105 => i.ret(BGColor(Magenta)),
-        46 | 106 => i.ret(BGColor(Cyan)),
-        47 | 107 => i.ret(BGColor(White)),
+        30       => i.ret(FGColor(Black)),
+        31       => i.ret(FGColor(Red)),
+        32       => i.ret(FGColor(Green)),
+        33       => i.ret(FGColor(Yellow)),
+        34       => i.ret(FGColor(Blue)),
+        35       => i.ret(FGColor(Magenta)),
+        36       => i.ret(FGColor(Cyan)),
+        37       => i.ret(FGColor(White)),
+        39       => i.ret(FGColor(Default)),
+        40       => i.ret(BGColor(Black)),
+        41       => i.ret(BGColor(Red)),
+        42       => i.ret(BGColor(Green)),
+        43       => i.ret(BGColor(Yellow)),
+        44       => i.ret(BGColor(Blue)),
+        45       => i.ret(BGColor(Magenta)),
+        46       => i.ret(BGColor(Cyan)),
+        47       => i.ret(BGColor(White)),
         49       => i.ret(BGColor(Default)),
         38       => next_num(i).bind(|i, n| match n {
             2 => parse!{i;
@@ -409,10 +410,28 @@ fn parse_char_attr(i: Input<u8>) -> U8Result<CharAttr> {
             5 => next_num(i).bind(|i, p| i.ret(BGColor(Palette(p)))),
             _ => i.err(chomp::Error::Unexpected),
         }),
+        90     => i.ret(FGColor(Palette(8))),  // Black intense
+        91     => i.ret(FGColor(Palette(9))),  // Red intense
+        92     => i.ret(FGColor(Palette(10))), // Green intense
+        93     => i.ret(FGColor(Palette(11))), // Yellow intense
+        94     => i.ret(FGColor(Palette(12))), // Blue intense
+        95     => i.ret(FGColor(Palette(13))), // Magenta intense
+        96     => i.ret(FGColor(Palette(14))), // Cyan intense
+        97     => i.ret(FGColor(Palette(15))), // White intense
+        99     => i.ret(BGColor(Default)),
+        100    => i.ret(BGColor(Palette(8))),  // Black intense
+        101    => i.ret(BGColor(Palette(9))),  // Red intense
+        102    => i.ret(BGColor(Palette(10))), // Green intense
+        103    => i.ret(BGColor(Palette(11))), // Yellow intense
+        104    => i.ret(BGColor(Palette(12))), // Blue intense
+        105    => i.ret(BGColor(Palette(13))), // Magenta intense
+        106    => i.ret(BGColor(Palette(14))), // Cyan intense
+        107    => i.ret(BGColor(Palette(15))), // White intense
         _ => i.err(chomp::Error::Unexpected),
     })
 }
 
+// TODO: Replace with proper int parser
 fn parse_int(buf: &[u8]) -> Result<Option<usize>, Error> {
     if buf.is_empty() {
         return Ok(None);

@@ -128,8 +128,6 @@ pub enum PrivateMode {
     ///
     /// Default: off
     LightScreen,
-    /// Represents an unknown PrivateMode
-    Unknown(u32),
 }
 
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
