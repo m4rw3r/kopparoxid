@@ -16,6 +16,7 @@ pub enum Seq {
     Unicode(u32),
 
     Index,
+    /// Move to first position on next line. If that position is on the margin, scroll up.
     NextLine,
     TabSet,
     ReverseIndex,

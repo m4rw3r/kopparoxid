@@ -1,10 +1,8 @@
 use gl::glyph;
 use glium;
 use std::rc::Rc;
-use term::Cell;
-use term::Display;
-use term::color;
-use term;
+
+use term::{self, Cell, CharMode, Display, color};
 
 #[derive(Copy, Clone, Debug)]
 struct ColoredVertex {
@@ -24,8 +22,8 @@ pub enum FontStyle {
     BoldItalic,
 }
 
-impl From<term::CharMode> for FontStyle {
-    fn from(m: term::CharMode) -> Self {
+impl From<CharMode> for FontStyle {
+    fn from(m: CharMode) -> Self {
         use term::char_mode::*;
 
         match (m.contains(BOLD), m.contains(ITALIC)) {
@@ -200,7 +198,7 @@ impl<'a, F, C> GlTerm<'a, F, C>
                     // let fg       = self.colors.fg(c.fg());
                     // TODO: Configuration for bold => bright
                     let fg = self.colors.fg(if c.attrs().contains(BOLD) {
-                        use ctrl::Color::*;
+                        use term::ctrl::Color::*;
 
                         match c.fg() {
                             Black   => Palette(8),

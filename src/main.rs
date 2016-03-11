@@ -1,21 +1,21 @@
 #[macro_use]
 extern crate bitflags;
-#[macro_use]
-extern crate chomp;
 extern crate errno;
 extern crate freetype as ft;
 #[macro_use]
 extern crate glium;
 extern crate glutin;
 extern crate libc;
-extern crate num;
 extern crate time;
+extern crate chomp;
+#[macro_use]
+extern crate log;
+extern crate env_logger;
 
-mod ctrl;
+extern crate kopparoxid_term as term;
+
 mod pty;
-mod term;
 mod gl;
-mod util;
 
 use std::io;
 use std::process;
@@ -27,8 +27,9 @@ use chomp::buffer::Source;
 use chomp::buffer::Stream;
 
 use gl::glyph;
+
 use term::color;
-use util::Coord;
+use term::ctrl;
 
 fn main() {
     let (mut m, s) = pty::open().unwrap();
@@ -37,7 +38,9 @@ fn main() {
         -1  => panic!(io::Error::last_os_error()),
         0   => pty::run_sh(m, s),
         pid => {
-            println!("master, child pid: {}", pid);
+            env_logger::init().unwrap();
+
+            info!("master, child pid: {}", pid);
 
             // TODO: How to set the buffer size of the pipe here?
             m.set_noblock();
@@ -88,7 +91,7 @@ fn window(m: pty::Fd, child_pid: libc::c_int) {
 
     let cell = f_map.cell_size();
 
-    let mut t = term::Term::new_with_size(Coord { col: 10, row: 10});
+    let mut t = term::Term::new_with_size(10, 10);
     let mut g = gl::term::GlTerm::new(&display, color::XtermDefault, f_map).unwrap();
 
     display.get_window().map(|w| w.set_title("Kopparoxid"));
@@ -99,19 +102,12 @@ fn window(m: pty::Fd, child_pid: libc::c_int) {
     let mut previous_clock = time::precise_time_ns();
     let mut prev_bufsize   = display.get_framebuffer_dimensions();
 
-    let tsize = Coord {
-        col: (prev_bufsize.0 / cell.0) as usize,
-        row: (prev_bufsize.1 / cell.1) as usize,
-    };
+    let tsize = (prev_bufsize.0 / cell.0, prev_bufsize.1 / cell.1);
 
-    // Merge with set window size? (in separate function/method)
-    t.resize(tsize);
+    t.resize((tsize.0 as usize, tsize.1 as usize));
 
     // TODO: Merge with SIGWINCH
-    out.set_window_size(tsize, Coord {
-        col: prev_bufsize.0 as usize,
-        row: prev_bufsize.1 as usize,
-    }).unwrap();
+    out.set_window_size(tsize, prev_bufsize).unwrap();
 
     // Message all processes in the child process group
     match unsafe { libc::kill(-child_pid, libc::SIGWINCH) } {
@@ -141,17 +137,22 @@ fn window(m: pty::Fd, child_pid: libc::c_int) {
                         else if let ctrl::Seq::PrivateModeSet(_) = s {}
                         else if let ctrl::Seq::PrivateModeReset(_) = s {}
                         else if let ctrl::Seq::Unicode(c) = s {
-                            print!("{}", ::std::char::from_u32(c).unwrap());
+                            trace!("{}", ::std::char::from_u32(c).unwrap());
                         }
                         else {
-                            println!("{:?}", s);
+                            trace!("{:?}", s);
                         }*/
 
-                        if let ctrl::Seq::SetWindowTitle(ref title) = s {
-                            display.get_window().map(|w| w.set_title(title));
-                        }
+                        match s {
+                            // Nothing to do
+                            ctrl::Seq::SetIconName(_) => {}
+                            ctrl::Seq::SetWindowTitle(ref title) => {
+                                display.get_window().map(|w| w.set_title(title));
 
-                        t.handle(s);
+                                continue;
+                            },
+                            s => t.handle(s),
+                        }
                     },
                     Err(StreamError::Retry)            => break,
                     Err(StreamError::EndOfInput)       => break,
@@ -159,12 +160,12 @@ fn window(m: pty::Fd, child_pid: libc::c_int) {
                     // skip and render frame, wait until next frame to continue parse:
                     Err(StreamError::Incomplete(_))    => break,
                     Err(StreamError::IoError(e))       => {
-                        println!("IoError: {:?}", e);
+                        error!("IoError: {:?}", e);
 
                         break;
                     },
                     Err(StreamError::ParseError(b, e)) => {
-                        println!("{:?} at {:?}", e, unsafe { ::std::str::from_utf8_unchecked(b) });
+                        error!("{:?} at {:?}", e, unsafe { ::std::str::from_utf8_unchecked(b) });
                     }
                 }
             }
@@ -181,7 +182,7 @@ fn window(m: pty::Fd, child_pid: libc::c_int) {
                         out.write(s.as_ref()).unwrap();
                     },
                     glutin::Event::MouseMoved(_) => {},
-                    _                                   => {} // println!("w {:?}", i)
+                    _                            => {} // println!("w {:?}", i)
                 }
             }
 
@@ -191,17 +192,12 @@ fn window(m: pty::Fd, child_pid: libc::c_int) {
             if buf_size != prev_bufsize {
                 prev_bufsize = buf_size;
 
-                let tsize = Coord {
-                    col: (buf_size.0 / cell.0) as usize,
-                    row: (buf_size.1 / cell.1) as usize,
-                };
+                let tsize = (prev_bufsize.0 / cell.0, prev_bufsize.1 / cell.1);
 
-                t.resize(tsize);
+                t.resize((tsize.0 as usize, tsize.1 as usize));
 
-                out.set_window_size(tsize, Coord {
-                    col: buf_size.0 as usize,
-                    row: buf_size.1 as usize,
-                }).unwrap();
+                // TODO: Merge with SIGWINCH
+                out.set_window_size(tsize, prev_bufsize).unwrap();
 
                 // Message all processes in the child process group
                 match unsafe { libc::kill(-child_pid, libc::SIGWINCH) } {
@@ -229,4 +225,10 @@ fn window(m: pty::Fd, child_pid: libc::c_int) {
 
 struct Window {
     child_pid: libc::c_int,
+}
+
+impl Window {
+    fn resize(&mut self) {
+
+    }
 }

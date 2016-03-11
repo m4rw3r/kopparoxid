@@ -6,8 +6,6 @@ use std::process;
 use std::ptr;
 use std::env;
 
-use util::Coord;
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Fd {
    fd: libc::c_int
@@ -32,14 +30,14 @@ impl Fd {
         }
     }
 
-    /// Sets the window-size
-    pub fn set_window_size(&mut self, term: Coord<usize>, pixels: Coord<usize>) -> io::Result<()> {
+    /// Sets the window-size in terminal cells and window pixels (width, height).
+    pub fn set_window_size(&mut self, term: (u32, u32), pixels: (u32, u32)) -> io::Result<()> {
         unsafe {
             let ws = libc::winsize {
-                ws_row:    term.row as libc::c_ushort,
-                ws_col:    term.col as libc::c_ushort,
-                ws_xpixel: pixels.row as libc::c_ushort,
-                ws_ypixel: pixels.col as libc::c_ushort,
+                ws_row:    term.1 as libc::c_ushort,
+                ws_col:    term.0 as libc::c_ushort,
+                ws_xpixel: pixels.0 as libc::c_ushort,
+                ws_ypixel: pixels.1 as libc::c_ushort,
             };
 
             match libc::ioctl(self.fd, TIOCSWINSZ, &ws) {
