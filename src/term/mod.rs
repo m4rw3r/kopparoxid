@@ -1,4 +1,3 @@
-use std::cmp;
 use std::io;
 use std::ptr;
 
@@ -257,8 +256,6 @@ impl Term {
     fn put(&mut self, c: Character) {
         // Wrap if we decided we would do it last time and autowrap is on
         if self.pmode.contains(AUTOWRAP) && self.wrap_next {
-            println!("Wrapping!");
-
             self.pos_diff_scroll(Coord { col: 0, row: 1 });
             self.pos.col = 0;
         }
@@ -267,12 +264,11 @@ impl Term {
 
         // Wrap on next if we are at end
         if self.pos.col + 1 == self.size.col {
-            println!("Wrap next");
             self.wrap_next = true;
         }
         else {
             // Move within bounds
-            self.pos.col += 1;
+            self.pos.col  += 1;
             self.wrap_next = false;
         }
     }
@@ -288,14 +284,14 @@ impl Term {
 
     /// Sets position relative within window, no scrolling behavior.
     fn pos_diff(&mut self, diff: Coord<isize>) {
-        let mut pos: Coord<usize> = (Into::<Coord<isize>>::into(self.pos) + diff).into();
+        let pos: Coord<usize> = (Into::<Coord<isize>>::into(self.pos) + diff).into();
 
         self.pos = pos.limit_within(self.size);
         self.wrap_next = false;
     }
 
     fn pos_diff_scroll(&mut self, diff: Coord<isize>) {
-        let mut pos: Coord<isize> = (Into::<Coord<isize>>::into(self.pos) + diff).into();
+        let pos: Coord<isize> = (Into::<Coord<isize>>::into(self.pos) + diff).into();
 
         /*
         // TODO negative col?
@@ -307,8 +303,6 @@ impl Term {
         */
 
         if pos.row >= self.size.row as isize {
-            println!("Scrolling {}", pos.row + 1 - self.size.row as isize);
-
             for i in 0..(self.size.row - 1) {
                 self.data.swap(i, i + 1);
             }
@@ -318,8 +312,6 @@ impl Term {
             }
         }
         else if pos.row < 0 {
-            println!("Scrolling {}", pos.row + 1 - self.size.row as isize);
-
             for i in (0..(self.size.row - 1)).rev() {
                 self.data.swap(i + 1, i);
             }
@@ -329,12 +321,12 @@ impl Term {
             }
         }
 
-        self.pos = Into::<Coord<usize>>::into(pos).limit_within(self.size);
+        self.pos       = Into::<Coord<usize>>::into(pos).limit_within(self.size);
         self.wrap_next = false;
     }
 
     fn set_pos(&mut self, pos: Coord<usize>) {
-        self.pos = pos.limit_within(self.size);
+        self.pos       = pos.limit_within(self.size);
         self.wrap_next = false;
     }
 
@@ -372,11 +364,11 @@ impl Term {
         use ctrl::CharAttr::*;
         use ctrl::CharType;
         use ctrl::PrivateMode;
-        use ctrl::Color;
 
         self.dirty = true;
 
         match item {
+            // Already managed
             SetWindowTitle(_) => {},
             Unicode(c)        => self.put_char(c as usize),
             CharAttr(list)    => {
@@ -408,7 +400,7 @@ impl Term {
             CursorBackward(n)                           => self.pos_diff(Coord { row: 0, col: -(n as isize) }),
             CarriageReturn                              => {
                 // TODO: This is bad, move cursor scroll into something else
-                self.pos.col = 0;
+                self.pos.col   = 0;
                 self.wrap_next = false;
             },
             ReverseIndex                                => self.pos_diff_scroll(Coord { row: -1, col: 0 }),
@@ -445,11 +437,11 @@ impl Term {
                 // 44 PCTerm
                 // 45 Soft key map
                 // 46 ASCII emulation
-                write!(self.out_buf, "\x1B[?64;1;2;6;7;8;9;12;15;18;21;23;24;42;44;45;46c");
+                write!(self.out_buf, "\x1B[?64;1;2;6;7;8;9;12;15;18;21;23;24;42;44;45;46c").unwrap();
             },
             SendSecondaryDeviceAttributes               => {
                 // we pretend to be a VT525 here, version 2.0
-                write!(self.out_buf, "\x1B[>65;20;1c");
+                write!(self.out_buf, "\x1B[>65;20;1c").unwrap();
             },
             CursorPositionReport                        => {
                 // CSI [ line ; col R
@@ -458,14 +450,14 @@ impl Term {
             ModeSet(modes) => {
                 for m in modes {
                     match m {
-                        _ => println!("Unknown mode: {:?}", m),
+                        _ => println!("Unknown mode (set): {:?}", m),
                     }
                 }
             },
             ModeReset(modes) => {
                 for m in modes {
                     match m {
-                        _ => println!("Unknown mode: {:?}", m),
+                        _ => println!("Unknown mode (reset): {:?}", m),
                     }
                 }
             },
@@ -473,7 +465,7 @@ impl Term {
                 for m in modes {
                     match m {
                         PrivateMode::ShowCursor => self.pmode.insert(SHOW_CURSOR),
-                        _                       => println!("Unknown private mode: {:?}", m),
+                        _                       => println!("Unknown private mode (set): {:?}", m),
                     }
                 }
             },
@@ -481,7 +473,7 @@ impl Term {
                 for m in modes {
                     match m {
                         PrivateMode::ShowCursor => self.pmode.remove(SHOW_CURSOR),
-                        _                       => println!("Unknown private mode: {:?}", m),
+                        _                       => println!("Unknown private mode (reset): {:?}", m),
                     }
                 }
             },

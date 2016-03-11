@@ -134,22 +134,28 @@ fn execvp(cmd: &str, params: &[&str]) -> io::Error {
 }
 
 pub fn run_sh(m: Fd, s: Fd) -> ! {
-    /* Get rid of the master fd before running the shell */
+    // Get rid of the master fd before running the shell
     drop(m);
 
-    unsafe { libc::setsid() };
+    // Needed to make sure that children receive the SIGWINCH signal
+    match unsafe { libc::setsid() } {
+        -1 => panic!("setsid() failed: {:?}", io::Error::last_os_error()),
+        _  => {}
+    }
 
     s.override_fd(libc::STDIN_FILENO).unwrap();
     s.override_fd(libc::STDOUT_FILENO).unwrap();
     s.override_fd(libc::STDERR_FILENO).unwrap();
 
+    // Cleanup env
     env::remove_var("COLUMNS");
     env::remove_var("LINES");
     env::remove_var("TERMCAP");
 
+    // TODO: Configurable
     env::set_var("TERM", "xterm-256color");
 
-    /* This will never return unless the shell command exits with error */
+    // This will never return unless the shell command exits with error
     print!("{}", execvp("zsh", &["-i"]));
 
     process::exit(-1);

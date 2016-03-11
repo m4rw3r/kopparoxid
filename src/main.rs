@@ -21,7 +21,6 @@ use std::io;
 use std::process;
 use std::thread;
 use std::time::Duration;
-use std::env;
 
 use chomp::buffer::StreamError;
 use chomp::buffer::Source;
@@ -50,7 +49,6 @@ fn main() {
 
 const FONT_SIZE: u32 = 16;
 
-
 fn load_font(f: &mut ft::Library, path: &str) -> Box<glyph::Renderer<u8>> {
     let ft_face = f.new_face(path, 0).unwrap();
 
@@ -60,7 +58,7 @@ fn load_font(f: &mut ft::Library, path: &str) -> Box<glyph::Renderer<u8>> {
     Box::new(glyph::FreeType::new(ft_face, glyph::FreeTypeMode::Greyscale))
 }
 
-fn window(mut m: pty::Fd, child_pid: libc::c_int) {
+fn window(m: pty::Fd, child_pid: libc::c_int) {
     use gl::glyph::Renderer;
     use glium::DisplayBuild;
     use gl::term::FontStyle;
@@ -112,7 +110,11 @@ fn window(mut m: pty::Fd, child_pid: libc::c_int) {
         row: prev_bufsize.1 as usize,
     }).unwrap();
 
-    unsafe { libc::kill(-child_pid, libc::SIGWINCH) };
+    // Message all processes in the child process group
+    match unsafe { libc::kill(-child_pid, libc::SIGWINCH) } {
+        -1 => panic!("kill(child, SIGWINCH) failed: {:?}", io::Error::last_os_error()),
+        _  => {},
+    }
 
     let mut buf = Source::from_read(m, chomp::buffer::FixedSizeBuffer::new());
 
@@ -132,12 +134,15 @@ fn window(mut m: pty::Fd, child_pid: libc::c_int) {
             loop {
                 match buf.parse(ctrl::parser) {
                     Ok(s) => {
-                        if let ctrl::Seq::CharAttr(_) = s {}
+                        /*if let ctrl::Seq::CharAttr(_) = s {}
                         else if let ctrl::Seq::PrivateModeSet(_) = s {}
                         else if let ctrl::Seq::PrivateModeReset(_) = s {}
+                        else if let ctrl::Seq::Unicode(c) = s {
+                            print!("{}", ::std::char::from_u32(c).unwrap());
+                        }
                         else {
                             println!("{:?}", s);
-                        }
+                        }*/
 
                         if let ctrl::Seq::SetWindowTitle(ref title) = s {
                             display.get_window().map(|w| w.set_title(title));
@@ -195,7 +200,11 @@ fn window(mut m: pty::Fd, child_pid: libc::c_int) {
                     row: buf_size.1 as usize,
                 }).unwrap();
 
-                unsafe { libc::kill(-child_pid, libc::SIGWINCH) };
+                // Message all processes in the child process group
+                match unsafe { libc::kill(-child_pid, libc::SIGWINCH) } {
+                    -1 => panic!("kill(child, SIGWINCH) failed: {:?}", io::Error::last_os_error()),
+                    _  => {},
+                }
             }
 
             if t.is_dirty() {

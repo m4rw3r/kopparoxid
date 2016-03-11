@@ -1,12 +1,12 @@
+use std::cmp;
+use std::collections;
+use std::fmt;
+use std::marker::PhantomData;
+
 use ft;
 use glium::{Texture2d, Rect};
 use glium::backend::Facade;
 use glium::texture::{ClientFormat, MipmapsOption, PixelValue, RawImage2d, UncompressedFloatFormat};
-use gl;
-use std::cmp;
-use std::fmt;
-use std::collections;
-use std::marker::PhantomData;
 
 /// Converts a monochrome bitmap where every bit represents a filled or empty pixel
 /// to a grayscale bitmap where every byte represents a pixel.
