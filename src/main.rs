@@ -47,12 +47,12 @@ fn main() {
     }
 }
 
-const FONT_SIZE: u32 = 16;
+const FONT_SIZE: f32 = 16.0;
 
-fn load_font(f: &mut ft::Library, path: &str) -> Box<glyph::Renderer<u8>> {
+fn load_font(f: &mut ft::Library, path: &str, size: u32) -> Box<glyph::Renderer<u8>> {
     let ft_face = f.new_face(path, 0).unwrap();
 
-    ft_face.set_pixel_sizes(0, FONT_SIZE).unwrap();
+    ft_face.set_pixel_sizes(0, size).unwrap();
 
     // TODO: Antialiasing settings
     Box::new(glyph::FreeType::new(ft_face, glyph::FreeTypeMode::Greyscale))
@@ -66,8 +66,11 @@ fn window(m: pty::Fd, child_pid: libc::c_int) {
     let mut out = m.clone();
     let display = glutin::WindowBuilder::new()
         .with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (3, 3)))
+        .with_srgb(Some(true))
         .build_glium()
         .unwrap();
+
+    let scale = display.get_window().map(|w| w.hidpi_factor()).unwrap_or(1.0);
 
     let faces = [
         (FontStyle::Regular,    "./DejaVuSansMono/DejaVu Sans Mono for Powerline.ttf"),
@@ -80,7 +83,7 @@ fn window(m: pty::Fd, child_pid: libc::c_int) {
     let mut f_map  = glyph::Map::new(&display);
 
     for &(f, t) in &faces {
-        f_map.add_renderer(f, load_font(&mut ft_lib, t)).unwrap();
+        f_map.add_renderer(f, load_font(&mut ft_lib, t, (FONT_SIZE * scale) as u32)).unwrap();
     }
 
     let cell = f_map.cell_size();
