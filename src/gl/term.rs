@@ -187,23 +187,46 @@ impl<'a, F, C> GlTerm<'a, F, C>
     }
 
     fn load_fg_vertices(&mut self, t: &term::Term, scale: (f32, f32), offset: (f32, f32)) {
+        use term::char_mode::BOLD;
+
         let cellsize = self.cellsize;
 
         self.fg_buffer.truncate(0);
 
         t.cells(|c| {
-            self.get_glyph(c.attrs().into(), c.glyph()).map(|g| {
-                let fg       = self.colors.fg(c.fg());
-                let left     = offset.0 + (c.col() as f32 * cellsize.0 + g.metrics.padding.left as f32) * scale.0;
-                let bottom   = offset.1 - ((c.row() + 1) as f32 * cellsize.1 - g.metrics.padding.bottom as f32) * scale.1;
-                let charsize = (g.metrics.width as f32 * scale.0, g.metrics.height as f32 * scale.1);
+            self.get_glyph(c.attrs().into(), c.glyph())
+                .map(|g| {
+                    // No bold mapping
+                    // let fg       = self.colors.fg(c.fg());
+                    // TODO: Configuration for bold => bright
+                    let fg = self.colors.fg(if c.attrs().contains(BOLD) {
+                        use ctrl::Color::*;
 
-                g.vertices((left, bottom), charsize, fg)
-            }).map(|vs| {
-                for v in vs.into_iter() {
-                    self.fg_buffer.push(*v);
-                }
-            });
+                        match c.fg() {
+                            Black   => Palette(8),
+                            Red     => Palette(9),
+                            Green   => Palette(10),
+                            Yellow  => Palette(11),
+                            Blue    => Palette(12),
+                            Magenta => Palette(13),
+                            Cyan    => Palette(14),
+                            White   => Palette(15),
+                            fg      => fg
+                        }
+                    } else {
+                        c.fg()
+                    });
+
+                    let left     = offset.0 + (c.col() as f32 * cellsize.0 + g.metrics.padding.left as f32) * scale.0;
+                    let bottom   = offset.1 - ((c.row() + 1) as f32 * cellsize.1 - g.metrics.padding.bottom as f32) * scale.1;
+                    let charsize = (g.metrics.width as f32 * scale.0, g.metrics.height as f32 * scale.1);
+
+                    g.vertices((left, bottom), charsize, fg)
+                }).map(|vs| {
+                    for v in vs.into_iter() {
+                        self.fg_buffer.push(*v);
+                    }
+                });
         })
     }
 
