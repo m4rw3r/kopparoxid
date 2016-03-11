@@ -253,7 +253,7 @@ impl<'a, F, C> GlTerm<'a, F, C>
         let g   = rgb[1];
         let b   = rgb[2];
 
-        target.clear_color(r, g, b, 1.0);
+        target.clear_color_srgb(r, g, b, 1.0);
 
         target.draw(&bg_buffer, &indices, &self.bg_shader, &uniforms, &params).unwrap();
         target.draw(&fg_buffer, &indices, &self.fg_shader, &uniforms, &params).unwrap();
