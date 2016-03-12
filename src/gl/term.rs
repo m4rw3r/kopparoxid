@@ -1,8 +1,10 @@
 use gl::glyph;
+use glium::backend::Context;
 use glium;
 use std::rc::Rc;
 
-use term::{self, Cell, CharMode, Display, color};
+use term::{self, Cell, CharMode, Display};
+use term::color::Manager;
 
 #[derive(Copy, Clone, Debug)]
 struct ColoredVertex {
@@ -38,13 +40,11 @@ impl From<CharMode> for FontStyle {
 pub type Renderer<'a> = glyph::Renderer<u8> + 'a;
 
 /// Structure used to render a Term instance onto a GL surface
-pub struct GlTerm<'a, F, C>
-  where F: 'a + glium::backend::Facade,
-        C: 'a + color::Manager {
+pub struct GlTerm<C: Manager> {
     /// OpenGl render context
     context:   Rc<glium::backend::Context>,
     /// Map and texture for storing rendered regular glyphs
-    glyphs:    glyph::Map<'a, F, FontStyle>,
+    glyphs:    glyph::Map<FontStyle>,
     /// Vertex buffer for foreground text cells
     fg_buffer: Vec<glyph::TexturedVertex>,
     /// Vertex buffer for background cells
@@ -59,14 +59,12 @@ pub struct GlTerm<'a, F, C>
     cellsize:  (f32, f32),
 }
 
-impl<'a, F, C> GlTerm<'a, F, C>
-  where F: 'a + glium::backend::Facade,
-        C: 'a + color::Manager {
-    pub fn new(display:   &'a F,
+impl<C: Manager> GlTerm<C> {
+    pub fn new(context:   Rc<Context>,
                colors:    C,
-               glyph_map: glyph::Map<'a, F, FontStyle>)
+               glyph_map: glyph::Map<FontStyle>)
         -> Result<Self, glium::program::ProgramChooserCreationError> {
-        let fg_shader = try!(program!(display,
+        let fg_shader = try!(program!(&context,
             410 => {
                 outputs_srgb: true,
                 vertex: "   #version 410
@@ -100,7 +98,7 @@ impl<'a, F, C> GlTerm<'a, F, C>
                 ",
             },
         ));
-        let bg_shader = try!(program!(display,
+        let bg_shader = try!(program!(&context,
             410 => {
                 outputs_srgb: true,
                 vertex: "   #version 410
@@ -132,7 +130,7 @@ impl<'a, F, C> GlTerm<'a, F, C>
         let cellsize = glyph_map.cell_size();
 
         Ok(GlTerm {
-            context:   display.get_context().clone(),
+            context:   context,
             glyphs:    glyph_map,
             fg_buffer: Vec::new(),
             bg_buffer: Vec::new(),
@@ -280,5 +278,9 @@ impl<'a, F, C> GlTerm<'a, F, C>
 
         target.draw(&bg_buffer, &indices, &self.bg_shader, &uniforms, &params).unwrap();
         target.draw(&fg_buffer, &indices, &self.fg_shader, &uniforms, &params).unwrap();
+    }
+
+    pub fn cell_size(&self) -> (u32, u32) {
+        self.glyphs.cell_size()
     }
 }

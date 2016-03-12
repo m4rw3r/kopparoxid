@@ -1,11 +1,12 @@
 use std::cmp;
+use std::rc::Rc;
 use std::collections;
 use std::fmt;
 use std::marker::PhantomData;
 
 use ft;
 use glium::{Texture2d, Rect};
-use glium::backend::Facade;
+use glium::backend::Context;
 use glium::texture::{ClientFormat, MipmapsOption, PixelValue, RawImage2d, UncompressedFloatFormat};
 
 /// Converts a monochrome bitmap where every bit represents a filled or empty pixel
@@ -178,33 +179,30 @@ impl<'a> Renderer<u8> for FreeType<'a> {
     }
 }
 
-#[derive(Debug)]
-pub struct Map<'a, F, K>
-  where F: 'a + Facade,
-        K: Clone + Ord {
-    renderers: collections::BTreeMap<K, Box<Renderer<u8> + 'a>>,
+pub struct Map<K>
+  where K: Clone + Ord {
+    renderers: collections::BTreeMap<K, Box<Renderer<u8> + 'static>>,
     glyphs:    collections::BTreeMap<(K, usize), GlyphData>,
-    atlas:     Atlas<'a, F>
+    atlas:     Atlas
 }
 
-impl<'a, F, K> Map<'a, F, K>
-  where F: 'a + Facade,
-        K: Clone + Ord {
+impl<K> Map<K>
+  where K: Clone + Ord {
     #[inline]
-    pub fn new(display: &'a F) -> Self {
-        Map::new_with_size(display, 1000)
+    pub fn new(context: Rc<Context>) -> Self {
+        Map::new_with_size(context, 1000)
     }
 
     #[inline]
-    pub fn new_with_size(display: &'a F, atlas_size: u32) -> Self {
+    pub fn new_with_size(context: Rc<Context>, atlas_size: u32) -> Self {
         Map {
             renderers: collections::BTreeMap::new(),
             glyphs:    collections::BTreeMap::new(),
-            atlas:     Atlas::new(display, atlas_size, atlas_size),
+            atlas:     Atlas::new(context, atlas_size, atlas_size),
         }
     }
 
-    pub fn add_renderer(&mut self, render_key: K, renderer: Box<Renderer<u8> + 'a>) -> Result<(), Error> {
+    pub fn add_renderer(&mut self, render_key: K, renderer: Box<Renderer<u8> + 'static>) -> Result<(), Error> {
         if self.renderers.contains_key(&render_key) {
             return Err(Error::DuplicateRendererKey);
         }
@@ -331,26 +329,25 @@ impl<'a> Glyph<'a> {
 /// The growth factor for the atlas.
 const ATLAS_GROWTH_FACTOR: u32 = 2;
 
-#[derive(Debug)]
-pub struct Atlas<'a, F> where F: 'a + Facade {
-    context:    &'a F,
+pub struct Atlas {
+    context:    Rc<Context>,
     used:       (u32, u32),
     row_height: u32,
     texture:    Texture2d,
 }
 
 /// Somewhat basic automatically resizing texture-atlas.
-impl<'a, F> Atlas<'a, F> where F: 'a + Facade {
-    pub fn new(facade: &'a F, width: u32, height: u32) -> Self {
+impl Atlas {
+    pub fn new(context: Rc<Context>, width: u32, height: u32) -> Self {
         use glium::Surface;
 
         // FIXME: Return Result instead
-        let tex = Texture2d::empty_with_format(facade, UncompressedFloatFormat::U8, MipmapsOption::NoMipmap, width, height).unwrap();
+        let tex = Texture2d::empty_with_format(&context, UncompressedFloatFormat::U8, MipmapsOption::NoMipmap, width, height).unwrap();
 
         tex.as_surface().clear_color(0.0, 0.0, 0.0, 0.0);
 
         Atlas {
-            context:    facade,
+            context:    context,
             used:       (0, 0),
             row_height: 0,
             texture:    tex,
@@ -385,7 +382,7 @@ impl<'a, F> Atlas<'a, F> where F: 'a + Facade {
             let h           = self.texture.get_height().unwrap_or(1);
             let w           = self.texture.get_width();
 
-            self.texture = Texture2d::empty_with_format(self.context, UncompressedFloatFormat::U8, MipmapsOption::NoMipmap, new_size.0, new_size.1).unwrap();
+            self.texture = Texture2d::empty_with_format(&self.context, UncompressedFloatFormat::U8, MipmapsOption::NoMipmap, new_size.0, new_size.1).unwrap();
 
             self.texture.as_surface().clear_color(0.0, 0.0, 0.0, 0.0);
 

@@ -14,6 +14,7 @@ libc        = { git = "https://github.com/rust-lang/libc.git" }
 log         = "*"
 num         = "*"
 mio         = "*"
+time        = "*"
 env_logger  = "*"
 
 kopparoxid-term = { path = "./term" }

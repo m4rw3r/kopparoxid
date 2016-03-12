@@ -1,3 +1,5 @@
+//! Event loop management for child-process.
+
 use std::sync::{Arc, Mutex};
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::io::{self, Write};
@@ -9,7 +11,7 @@ use libc;
 use chomp::buffer::{FixedSizeBuffer, Source, Stream, StreamError};
 use chomp::buffer::data_source::ReadDataSource;
 
-use mio::{EventLoop, EventSet, Handler, PollOpt, Sender, Token};
+use mio::{EventLoop, EventLoopConfig, EventSet, Handler, PollOpt, Sender, Token, Timeout};
 use mio::unix::UnixStream;
 
 use glutin::WindowProxy;
@@ -19,7 +21,6 @@ use term::{ctrl, Term};
 use pty;
 
 const INPUT: Token = Token(0);
-const WRITE: Token = Token(1);
 
 #[derive(Clone, Copy, Debug)]
 pub enum Message {
@@ -39,50 +40,40 @@ pub enum Message {
 }
 
 struct TermHandler {
-    shell:     UnixStream,
+    shell:       UnixStream,
     /// Process id (and process group id) of the stream found in `shell`
-    child_pid: libc::c_int,
+    child_pid:   libc::c_int,
     /// Parser buffer over `shell`
-    buf:       Source<ReadDataSource<pty::Fd>, FixedSizeBuffer<u8>>,
+    buf:         Source<ReadDataSource<pty::Fd>, FixedSizeBuffer<u8>>,
     /// Terminal data
-    term:      Arc<Mutex<Term>>,
-    win:       WindowProxy,
+    term:        Arc<Mutex<Term>>,
+    win:         WindowProxy,
     /// Output buffer with data to write to the process
-    out_buf:   Vec<u8>,
+    out_buf:     Vec<u8>,
+    /// Timeout object for the window event loop wakeup
+    win_timeout: Option<Timeout>,
 }
 
 impl TermHandler {
-    fn write_out(&mut self, event_loop: &mut EventLoop<Self>) -> io::Result<usize> {
-        if !self.out_buf.is_empty() {
-            self.shell.write(&self.out_buf).map(|n| {
-                debug_assert!(n <= self.out_buf.len());
-
-                unsafe {
-                    let new_len = self.out_buf.len() - n;
-                    let buf     = self.out_buf.as_mut_ptr();
-
-                    ptr::copy(buf.offset(n as isize), buf, new_len);
-
-                    self.out_buf.truncate(new_len);
-                }
-
-                info!("wrote {}", n);
-
-                if self.out_buf.is_empty() {
-                    // Reregister for reads again
-                    event_loop.reregister(&self.shell, INPUT, EventSet::readable(), PollOpt::level()).unwrap();
-                } else {
-                    info!("queueing up more writes");
-
-                    // Switch to waiting for writable
-                    event_loop.reregister(&self.shell, WRITE, EventSet::writable(), PollOpt::edge() | PollOpt::oneshot()).unwrap();
-                }
-
-                n
-            })
-        } else {
-            Ok(0)
+    fn write_out(&mut self) -> io::Result<usize> {
+        if self.out_buf.is_empty() {
+            return Ok(0);
         }
+
+        self.shell.write(&self.out_buf).map(|n| {
+            debug_assert!(n <= self.out_buf.len());
+
+            unsafe {
+                let new_len = self.out_buf.len() - n;
+                let buf     = self.out_buf.as_mut_ptr();
+
+                ptr::copy(buf.offset(n as isize), buf, new_len);
+
+                self.out_buf.truncate(new_len);
+            }
+
+            n
+        })
     }
 
     /// Parses control codes, returns true if codes were parsed.
@@ -94,11 +85,13 @@ impl TermHandler {
         loop {
             match self.buf.parse(ctrl::parser) {
                 Ok(s) => {
-                    trace!("{:?}", s);
+                    // trace!("{:?}", s);
 
                     match s {
                         // Nothing to do
                         ctrl::Seq::SetIconName(_) => {}
+                        // TODO: Implement
+                        ctrl::Seq::Bell => {}
                         s => {
                             dirty = true;
 
@@ -126,36 +119,50 @@ impl TermHandler {
     }
 }
 
+const FRAME_TIME: u64 = 16;
+
 impl Handler for TermHandler {
     type Timeout = ();
     type Message = Message;
 
-    fn ready(&mut self, event_loop: &mut EventLoop<Self>, token: Token, events: EventSet) {
-        info!("shell ready: {:?} {:?}", token, events);
+    fn ready(&mut self, event_loop: &mut EventLoop<Self>, _token: Token, events: EventSet) {
+        if events.is_readable() {
+            // TODO: Check fill rate
+            self.buf.fill().unwrap();
 
-        match token {
-            INPUT => {
-                assert!(events.is_readable());
+            let dirty = self.parse();
 
-                // TODO: Check fill rate
-                self.buf.fill().unwrap();
+            if dirty && self.win_timeout.is_none() {
+                info!("waking up window event loop");
 
-                let dirty = self.parse();
+                // TODO: Wouldn't this imply that it sometimes renders the same frame twice in
+                // quick succession? ie. timeout fires and immediately after ready fires
+                self.win.wakeup_event_loop();
 
-                // We can attempt to write here too, READ implies WRITE for short delays
-                self.write_out(event_loop).unwrap();
-
-                if dirty {
-                    info!("waking up window event loop");
-
-                    self.win.wakeup_event_loop();
-                }
-            },
-            WRITE => {
-                self.write_out(event_loop).unwrap();
-            },
-            _ => unreachable!(),
+                self.win_timeout = Some(event_loop.timeout_ms((), FRAME_TIME).unwrap());
+            }
         }
+
+        // Usually read implies write
+        if events.is_writable() {
+            self.write_out(event_loop).unwrap();
+        }
+
+        if self.out_buf.is_empty() {
+            event_loop.reregister(&self.shell, INPUT, EventSet::readable(), PollOpt::level()).unwrap();
+        } else {
+            info!("queueing up more writes");
+
+            event_loop.reregister(&self.shell, INPUT, EventSet::writable() | EventSet::readable(), PollOpt::level()).unwrap();
+        }
+    }
+
+    fn timeout(&mut self, _event_loop: &mut EventLoop<Self>, _timeout: Self::Timeout) {
+        info!("waking up window event loop");
+
+        self.win.wakeup_event_loop();
+
+        self.win_timeout = None;
     }
 
     fn notify(&mut self, event_loop: &mut EventLoop<Self>, msg: Message) {
@@ -176,32 +183,37 @@ impl Handler for TermHandler {
             Character(c) => {
                 write!(self.out_buf, "{}", c).unwrap();
 
-                event_loop.register(&self.shell, WRITE, EventSet::writable(), PollOpt::oneshot()).unwrap();
+                // Turn on writing
+                event_loop.reregister(&self.shell, INPUT, EventSet::writable() | EventSet::readable(), PollOpt::level()).unwrap();
             }
         }
     }
 }
 
-pub fn run(m: pty::Fd, child_pid: libc::c_int, w: WindowProxy) -> (Arc<Mutex<Term>>, Sender<Message>) {
-    let mut ev_loop = EventLoop::new().unwrap();
-    //
+pub fn run(mut m: pty::Fd, child_pid: libc::c_int, w: WindowProxy) -> (Arc<Mutex<Term>>, Sender<Message>) {
+    let mut ev_cfg  = EventLoopConfig::new();
+
+    // We do not want to block the event loop
+    m.set_noblock();
+    // Default timer tick is 100 ms which is too long
+    ev_cfg.timer_tick_ms(FRAME_TIME);
+
+    let mut ev_loop = EventLoop::configured(ev_cfg).unwrap();
+    let t           = Arc::new(Mutex::new(Term::new_with_size(80, 24)));
     let shell       = unsafe { UnixStream::from_raw_fd(m.as_raw_fd()) };
-
-    let t = Arc::new(Mutex::new(Term::new_with_size(80, 24)));
-
-    ev_loop.register(&shell, INPUT, EventSet::readable(), PollOpt::level()).unwrap();
-
-    let mut buf = Source::from_read(m, FixedSizeBuffer::new());
+    let mut buf     = Source::from_read(m, FixedSizeBuffer::new());
 
     buf.set_autofill(false);
+    ev_loop.register(&shell, INPUT, EventSet::readable(), PollOpt::level()).unwrap();
 
     let mut handler = TermHandler {
-        shell:     shell,
-        child_pid: child_pid,
-        term:      t.clone(),
-        buf:       buf,
-        win:       w,
-        out_buf:   Vec::new(),
+        shell:       shell,
+        child_pid:   child_pid,
+        term:        t.clone(),
+        buf:         buf,
+        win:         w,
+        win_timeout: None,
+        out_buf:     Vec::new(),
     };
 
     let msg = ev_loop.channel();
