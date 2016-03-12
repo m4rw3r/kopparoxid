@@ -14,6 +14,7 @@ bitflags! {
 }
 
 impl Default for CursorState {
+    #[inline]
     fn default() -> Self {
         AUTOREPEAT | AUTOWRAP
     }
@@ -27,10 +28,12 @@ pub struct Cursor {
 }
 
 impl Cursor {
+    #[inline]
     pub fn row(&self) -> usize {
         self.row
     }
 
+    #[inline]
     pub fn col(&self) -> usize {
         self.col
     }
@@ -80,6 +83,7 @@ impl<T: Copy + Default> Grid<T> {
     }
 
     /// Returns width and height in cells
+    #[inline]
     pub fn size(&self) -> (usize, usize) {
         (self.width, self.height)
     }
@@ -142,6 +146,7 @@ impl<T: Copy + Default> Grid<T> {
         }
     }
 
+    #[inline]
     pub fn move_cursor<M: Movement>(&mut self, cursor: &mut Cursor, direction: M) {
         info!("Moving cursor from (l: {}, r: {}): {:?}", cursor.row, cursor.col, direction);
 
@@ -177,6 +182,7 @@ impl<T: Copy + Default> Grid<T> {
         }
     }
 
+    #[inline]
     pub fn cells(&self) -> Cells<T> {
         Cells(self, 0)
     }
@@ -185,6 +191,7 @@ impl<T: Copy + Default> Grid<T> {
 pub struct Cells<'a, T: 'a + Copy + Default>(&'a Grid<T>, usize);
 
 impl<'a, T: 'a + Copy + Default> Cells<'a, T> {
+    #[inline]
     pub fn coords(self) -> CellsWCoords<'a, T> {
         CellsWCoords(self.0, self.1)
     }
@@ -193,6 +200,7 @@ impl<'a, T: 'a + Copy + Default> Cells<'a, T> {
 impl<'a, T: 'a + Copy + Default> Iterator for Cells<'a, T> {
     type Item = T;
 
+    #[inline]
     fn next(&mut self) -> Option<T> {
         if self.1 >= self.0.height * self.0.width {
             None
@@ -212,6 +220,7 @@ pub struct CellsWCoords<'a, T: 'a + Copy + Default>(&'a Grid<T>, usize);
 impl<'a, T: 'a + Copy + Default> Iterator for CellsWCoords<'a, T> {
     type Item = ((usize, usize), T);
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.1 >= self.0.height * self.0.width {
             None
@@ -231,6 +240,7 @@ pub trait Movement: fmt::Debug {
 }
 
 impl<A: Movement, B: Movement> Movement for (A, B) {
+    #[inline]
     fn move_cursor<T: Copy + Default>(&self, g: &mut Grid<T>, c: &mut Cursor) {
         Movement::move_cursor(&self.0, g, c);
         Movement::move_cursor(&self.1, g, c);
@@ -248,6 +258,7 @@ pub enum Line {
 }
 
 impl Movement for Line {
+    #[inline]
     fn move_cursor<T: Copy + Default>(&self, g: &mut Grid<T>, c: &mut Cursor) {
         match *self {
             Line::Up(n)   => c.row = c.row.saturating_sub(n),
@@ -268,6 +279,7 @@ pub enum Column {
 }
 
 impl Movement for Column {
+    #[inline]
     fn move_cursor<T: Copy + Default>(&self, g: &mut Grid<T>, c: &mut Cursor) {
         match *self {
             Column::Left(n)   => c.col = c.col.saturating_sub(n),
@@ -284,6 +296,7 @@ impl Movement for Column {
 pub struct Unbounded(pub Line);
 
 impl Movement for Unbounded {
+    #[inline]
     fn move_cursor<T: Copy + Default>(&self, g: &mut Grid<T>, c: &mut Cursor) {
         use self::Line::*;
 

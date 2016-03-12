@@ -27,6 +27,7 @@ pub mod char_mode {
     }
 
     impl Default for CharMode {
+        #[inline]
         fn default() -> Self {
             DEFAULT
         }
@@ -74,6 +75,7 @@ bitflags!{
 }
 
 impl Default for Mode {
+    #[inline]
     fn default() -> Self {
         Mode::empty()
     }
@@ -100,6 +102,7 @@ pub trait Display {
 }
 
 impl Display for Term {
+    #[inline]
     fn glyphs<F>(&self, mut f: F)
       where F: Sized + FnMut(usize, CharMode) {
         for c in self.grid.cells().filter(|c| c.0 != 0) {
@@ -107,6 +110,7 @@ impl Display for Term {
         }
     }
 
+    #[inline]
     fn cells<F>(&self, mut f: F)
       where F: Sized + FnMut(&Cell) {
         use self::char_mode::*;
@@ -121,26 +125,32 @@ impl Display for Term {
         }
 
         impl Cell for C {
+            #[inline]
             fn col(&self) -> usize {
                 self.col
             }
 
+            #[inline]
             fn row(&self) -> usize {
                 self.row
             }
 
+            #[inline]
             fn glyph(&self) -> usize {
                 self.glyph
             }
 
+            #[inline]
             fn fg(&self) -> ctrl::Color {
                 if self.attrs.contains(INVERSE) { self.bg } else { self.fg }
             }
 
+            #[inline]
             fn bg(&self) -> ctrl::Color {
                 if self.attrs.contains(INVERSE) { self.fg } else { self.bg }
             }
 
+            #[inline]
             fn attrs(&self) -> CharMode {
                 self.attrs
             }
@@ -177,6 +187,7 @@ pub struct Term {
 }
 
 impl Term {
+    #[inline]
     pub fn new_with_size(width: usize, height: usize) -> Self {
         Term {
             grid:    Grid::new(width, height),
@@ -189,6 +200,7 @@ impl Term {
     }
 
     /// Resizes to (width, height)
+    #[inline]
     pub fn resize(&mut self, size: (usize, usize)) {
         if size != self.grid.size() {
             self.grid.resize(size.0, size.1);
@@ -198,10 +210,12 @@ impl Term {
         // TODO: Limit cursor to within, mainly for display purposes
     }
 
+    #[inline]
     fn put_char(&mut self, c: usize) {
         self.grid.put(&mut self.cursor, (c, self.style))
     }
 
+    #[inline]
     fn move_cursor<M: Movement>(&mut self, m: M) {
         self.grid.move_cursor(&mut self.cursor, m)
     }
@@ -340,6 +354,7 @@ impl Term {
         // \x1B[I for focus in and \x1B[O for focus out
     }
 
+    #[inline]
     pub fn get_title(&self) -> &str {
         &self.title
     }

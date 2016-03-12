@@ -82,6 +82,7 @@ impl io::Write for Fd {
 }
 
 impl AsRawFd for Fd {
+    #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.fd
     }
@@ -109,6 +110,7 @@ pub fn open() -> io::Result<(Fd, Fd)> {
 }
 
 /// Sets the window-size in terminal cells and window pixels (width, height).
+#[inline]
 pub fn set_window_size(fd: RawFd, term: (u32, u32), pixels: (u32, u32)) -> io::Result<()> {
     unsafe {
         let ws = libc::winsize {

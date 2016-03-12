@@ -31,6 +31,7 @@ fn to_color<F>(c: ctrl::Color, default: [f32; 3], f: F) -> [f32; 3]
     }
 }
 
+#[inline]
 fn rgb2float(x: u32) -> [f32; 3] {
     [
         (((x & 0xff0000) >> 16) as f32) / 255.0,
@@ -104,16 +105,19 @@ fn xterm_palette(c: u8) -> [f32; 3] {
 pub struct XtermDefault;
 
 impl Manager for XtermDefault {
+    #[inline]
     fn fg(&self, color: ctrl::Color) -> [f32; 3] {
         to_color(color, rgb2float(0xc5c8c6), xterm_palette)
         //to_color(color, [0.0, 0.0, 0.0], xterm_palette)
     }
 
+    #[inline]
     fn bg(&self, color: ctrl::Color) -> [f32; 3] {
         to_color(color, rgb2float(0x1d1f21), xterm_palette)
         //to_color(color, [1.0, 1.0, 1.0], xterm_palette)
     }
 
+    #[inline]
     fn fill(&self) -> [f32; 3] {
         rgb2float(0x1d1f21)
         //[1.0, 1.0, 1.0]

@@ -143,14 +143,15 @@ impl<'a, F, C> GlTerm<'a, F, C>
         })
     }
 
+    #[inline]
     fn load_glyphs(&mut self, t: &term::Term) {
         t.glyphs(|g, m| {
             let t = m.into();
 
             self.glyphs.load(t, g).or_else(|e|
                 if t != FontStyle::Regular {
-                    // Fall back to regular font
-                    // TODO: Logging
+                    info!("No font style {:?} found, dalling back to regular font", t);
+
                     self.glyphs.load(FontStyle::Regular, g)
                 } else {
                     Err(e)
@@ -158,6 +159,7 @@ impl<'a, F, C> GlTerm<'a, F, C>
         })
     }
 
+    #[inline]
     fn get_glyph(&self, f: FontStyle, chr: usize) -> Option<glyph::Glyph> {
         self.glyphs.get(f, chr).or_else(|| self.glyphs.get(FontStyle::Regular, chr))
     }

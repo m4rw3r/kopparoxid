@@ -190,10 +190,12 @@ pub struct Map<'a, F, K>
 impl<'a, F, K> Map<'a, F, K>
   where F: 'a + Facade,
         K: Clone + Ord {
+    #[inline]
     pub fn new(display: &'a F) -> Self {
         Map::new_with_size(display, 1000)
     }
 
+    #[inline]
     pub fn new_with_size(display: &'a F, atlas_size: u32) -> Self {
         Map {
             renderers: collections::BTreeMap::new(),
@@ -234,6 +236,7 @@ impl<'a, F, K> Map<'a, F, K>
     }
 
     /// Retrieves a specific glyph if it exists.
+    #[inline]
     pub fn get<'b>(&'b self, render_key: K, glyph: usize) -> Option<Glyph<'b>> {
         self.glyphs.get(&(render_key, glyph)).map(|d| {
             let g               = d.tex_rect;
@@ -254,6 +257,7 @@ impl<'a, F, K> Map<'a, F, K>
         })
     }
 
+    #[inline]
     pub fn texture(&self) -> &Texture2d {
         self.atlas.texture()
     }
@@ -304,6 +308,7 @@ impl<'a> Glyph<'a> {
     ///
     /// ``p`` is the position of the lower-left corner of the quad, ``s`` is the width and
     /// height of the quad. ``rgb`` is the foreground RGB color.
+    #[inline]
     pub fn vertices(&self, p: (f32, f32), s: (f32, f32), rgb: [f32; 3]) -> [TexturedVertex; 6] {
         // vertex positions
         let l =  p.0        as f32;
@@ -407,10 +412,12 @@ impl<'a, F> Atlas<'a, F> where F: 'a + Facade {
         r
     }
 
+    #[inline]
     pub fn texture(&self) -> &Texture2d {
         &self.texture
     }
 
+    #[inline]
     pub fn texture_size(&self) -> (u32, u32) {
         (self.texture.get_width(), self.texture.get_height().unwrap_or(1))
     }
