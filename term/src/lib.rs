@@ -8,6 +8,8 @@ extern crate log;
 use std::io;
 use std::ptr;
 
+use std::io::Write;
+
 pub mod ctrl;
 pub mod color;
 
@@ -214,7 +216,6 @@ impl Term {
     }
 
     pub fn handle(&mut self, item: ctrl::Seq) {
-        use std::io::Write;
         use self::char_mode::*;
 
         use ctrl::Seq::*;
@@ -343,6 +344,16 @@ impl Term {
         // \x1B[I for focus in and \x1B[O for focus out
     }
 
+    pub fn has_output(&self) -> bool {
+        !self.out_buf.is_empty()
+    }
+
+    /// Queues up a character write on the output buffer
+    // TODO: Doesn't really belong here, but needs access to out_buf
+    pub fn queue_character(&mut self, c: char) {
+        write!(self.out_buf, "{}", c).unwrap()
+    }
+
     pub fn write_output<W: io::Write>(&mut self, mut w: W) -> io::Result<usize> {
         w.write(&self.out_buf).map(|n| unsafe {
             debug_assert!(n <= self.out_buf.len());
@@ -354,8 +365,9 @@ impl Term {
 
             self.out_buf.truncate(new_len);
 
+            info!("out_buf remaining: {}", new_len);
+
             n
         })
     }
-
 }
