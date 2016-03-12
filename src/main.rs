@@ -29,13 +29,16 @@ use term::color;
 const FONT_SIZE: u32 = 16;
 
 fn main() {
-    let (m, s) = pty::open().unwrap();
+    let (m, s) = pty::open().expect("Failed to open pty");
+
+    // Make the current (main) process the group leader to propagate signals to children
+    pty::create_process_group().expect("Failed to make process group");
 
     match unsafe { libc::fork() } {
         -1  => panic!(io::Error::last_os_error()),
         0   => pty::run_sh(m, s),
         pid => {
-            env_logger::init().unwrap();
+            env_logger::init().expect("Failed to create env_logger");
 
             info!("master, child pid: {}", pid);
 

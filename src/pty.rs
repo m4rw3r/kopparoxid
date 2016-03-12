@@ -109,6 +109,15 @@ pub fn open() -> io::Result<(Fd, Fd)> {
     }
 }
 
+/// Makes the current process the group leader of a new group with the group id set to its own
+/// process id.
+pub fn create_process_group() -> io::Result<()> {
+    match unsafe { libc::setpgid(0, 0) } {
+        -1 => Err(io::Error::last_os_error()),
+        _  => Ok(()),
+    }
+}
+
 /// Sets the window-size in terminal cells and window pixels (width, height).
 #[inline]
 pub fn set_window_size(fd: RawFd, term: (u32, u32), pixels: (u32, u32)) -> io::Result<()> {
@@ -154,6 +163,15 @@ pub fn run_sh(m: Fd, s: Fd) -> ! {
     s.override_fd(libc::STDIN_FILENO).unwrap();
     s.override_fd(libc::STDOUT_FILENO).unwrap();
     s.override_fd(libc::STDERR_FILENO).unwrap();
+
+    unsafe {
+        libc::signal(libc::SIGCHLD, libc::SIG_DFL);
+        libc::signal(libc::SIGHUP,  libc::SIG_DFL);
+        libc::signal(libc::SIGINT,  libc::SIG_DFL);
+        libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+        libc::signal(libc::SIGTERM, libc::SIG_DFL);
+        libc::signal(libc::SIGALRM, libc::SIG_DFL);
+    }
 
     // Cleanup env
     env::remove_var("COLUMNS");
