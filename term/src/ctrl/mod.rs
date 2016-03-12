@@ -173,17 +173,20 @@ fn parse_csi(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
     take_till(m, |c| c >= 0x40 && c <= 0x7E).bind(|m, buf|
         any(m).bind(|m, c| match c {
             // Identify terminal
-            b'c' => return match buf.get(0) {
+            b'c' => match buf.get(0) {
                 Some(&b'>') => m.ret(Seq::SendSecondaryDeviceAttributes),
                 _           => m.ret(Seq::SendPrimaryDeviceAttributes),
             },
+            b'd' => m.from_result(parse_int(buf).map(|n| Seq::LinePositionAbsolute(n.unwrap_or(1)))),
+            // TODO: is CursorDown ok for Line Position Relative?
+            b'e' => m.from_result(parse_int(buf).map(|n| Seq::CursorDown(n.unwrap_or(1)))),
             // Mode set
-            b'h' => return match buf.get(0) {
+            b'h' => match buf.get(0) {
                 Some(&b'?') => m.from_result(parse_private_mode(&buf[1..]).map(|a| Seq::PrivateModeSet(a))),
                 _           => m.from_result(parse_mode(buf).map(|a| Seq::ModeSet(a))),
             },
             // Mode unset
-            b'l' => return match buf.get(0) {
+            b'l' => match buf.get(0) {
                 Some(&b'?')  => m.from_result(parse_private_mode(&buf[1..]).map(|a| Seq::PrivateModeReset(a))),
                 _            => m.from_result(parse_mode(buf).map(|a| Seq::ModeReset(a))),
             },
@@ -215,7 +218,7 @@ fn parse_csi(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
             b'D' => m.from_result(parse_int(buf).map(|n| Seq::CursorBackward(n.unwrap_or(1)))),
             b'E' => m.from_result(parse_int(buf).map(|n| Seq::CursorNextLine(n.unwrap_or(1)))),
             b'F' => m.from_result(parse_int(buf).map(|n| Seq::CursorPreviousLine(n.unwrap_or(1)))),
-            b'G' => return m.from_result(parse_int(buf).map(|n| Seq::CursorHorizontalAbsolute(cmp::max(1, n.unwrap_or(1)) - 1))),
+            b'G' => m.from_result(parse_int(buf).map(|n| Seq::CursorHorizontalAbsolute(cmp::max(1, n.unwrap_or(1)) - 1))),
             b'H' => m.from_result(parse_only(parser!{
                     let row = option(decimal, 1);
                     let col = option(parser!{token(b';'); decimal()}, 1);

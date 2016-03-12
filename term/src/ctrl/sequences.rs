@@ -86,6 +86,7 @@ pub enum Seq {
     SetIconName(String),
     SetXProps(String),
     SetColorNumber(String),
+    LinePositionAbsolute(usize),
 }
 
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

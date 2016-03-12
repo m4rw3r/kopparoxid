@@ -6,7 +6,6 @@ extern crate chomp;
 extern crate log;
 
 use std::io;
-use std::ptr;
 
 use std::io::Write;
 
@@ -164,15 +163,17 @@ use grid::{Cursor, Grid, Movement};
 
 #[derive(Debug)]
 pub struct Term {
+    /// Terminal cell grid
     grid:    Grid<(usize, Style)>,
     /// Output buffer
     out_buf: Vec<u8>,
-    //pos:    Coord<usize>,
+    /// Style used to populate cells at cursor
     style:  Style,
     cursor: Cursor,
+    /// Window title
+    title:  String,
+    /// Terminal mode
     mode:   Mode,
-    dirty:  bool,
-    //wrap_next: bool,
 }
 
 impl Term {
@@ -181,25 +182,15 @@ impl Term {
             grid:    Grid::new(width, height),
             out_buf: Vec::new(),
             cursor:  Cursor::default(),
+            title:   String::new(),
             style:   Style::default(),
             mode:    Mode::default(),
-            dirty:   false,
         }
-    }
-
-    pub fn is_dirty(&self) -> bool {
-        self.dirty
-    }
-
-    pub fn set_dirty(&mut self, dirty: bool) {
-        self.dirty = dirty
     }
 
     /// Resizes to (width, height)
     pub fn resize(&mut self, size: (usize, usize)) {
         if size != self.grid.size() {
-            self.dirty = true;
-
             self.grid.resize(size.0, size.1);
         }
 
@@ -215,7 +206,7 @@ impl Term {
         self.grid.move_cursor(&mut self.cursor, m)
     }
 
-    pub fn handle(&mut self, item: ctrl::Seq) {
+    pub fn handle<W: Write>(&mut self, item: ctrl::Seq, mut out: W) -> io::Result<()> {
         use self::char_mode::*;
 
         use ctrl::Seq::*;
@@ -229,9 +220,8 @@ impl Term {
         use self::grid::Column::*;
         use self::grid::Unbounded;
 
-        self.dirty = true;
-
         match item {
+            SetWindowTitle(title) => self.title = title,
             Unicode(c)        => self.put_char(c as usize),
             CharAttr(list)    => {
                 for a in list {
@@ -253,20 +243,24 @@ impl Term {
                     }
                 }
             },
-            EraseInDisplay(EID::Below) => self.grid.erase_in_display_below(&self.cursor),
-            EraseInLine(EIL::Right)    => self.grid.erase_in_line_right(&self.cursor),
-            EraseInDisplay(EID::All)   => self.grid.erase_in_display_all(),
-            CursorPosition(row, col)   => self.move_cursor((Line(row), Column(col))),
-            CursorUp(n)                => self.move_cursor(Up(n)),
-            CursorDown(n)              => self.move_cursor(Down(n)),
-            CursorForward(n)           => self.move_cursor(Right(n)),
-            CursorBackward(n)          => self.move_cursor(Left(n)),
-            CarriageReturn             => self.move_cursor(Column(0)),
-            Backspace                  => self.move_cursor(Left(1)),
-            Index                      => self.move_cursor(Unbounded(Down(1))),
-            ReverseIndex               => self.move_cursor(Unbounded(Up(1))),
-            NextLine                   => self.move_cursor((Unbounded(Down(1)), Column(0))),
-            LineFeed                   => {
+            EraseInDisplay(EID::Below)  => self.grid.erase_in_display_below(&self.cursor),
+            EraseInLine(EIL::Right)     => self.grid.erase_in_line_right(&self.cursor),
+            EraseInDisplay(EID::All)    => self.grid.erase_in_display_all(),
+            CursorPosition(row, col)    => self.move_cursor((Line(row), Column(col))),
+            CursorUp(n)                 => self.move_cursor(Up(n)),
+            CursorDown(n)               => self.move_cursor(Down(n)),
+            CursorForward(n)            => self.move_cursor(Right(n)),
+            CursorBackward(n)           => self.move_cursor(Left(n)),
+            CursorNextLine(n)           => self.move_cursor((Down(n), Column(0))),
+            CursorPreviousLine(n)       => self.move_cursor((Up(n), Column(0))),
+            LinePositionAbsolute(n)     => self.move_cursor(Line(n)),
+            CursorHorizontalAbsolute(n) => self.move_cursor(Column(n)),
+            CarriageReturn              => self.move_cursor(Column(0)),
+            Backspace                   => self.move_cursor(Left(1)),
+            Index                       => self.move_cursor(Unbounded(Down(1))),
+            ReverseIndex                => self.move_cursor(Unbounded(Up(1))),
+            NextLine                    => self.move_cursor((Unbounded(Down(1)), Column(0))),
+            LineFeed                    => {
                 // The reset state causes the interpretation of the line feed (LF), defined in ANSI Standard X3.4-1977, to imply only vertical movement of the active position and causes the RETURN key (CR) to send the single code CR. The set state causes the LF to imply movement to the first position of the following line and causes the RETURN key to send the two codes (CR, LF). This is the New Line (NL) option.
                 if self.mode.contains(NEW_LINE) {
                     self.move_cursor((Unbounded(Down(1)), Column(0)));
@@ -295,15 +289,15 @@ impl Term {
                 // 44 PCTerm
                 // 45 Soft key map
                 // 46 ASCII emulation
-                write!(self.out_buf, "\x1B[?64;1;2;6;7;8;9;12;15;18;21;23;24;42;44;45;46c").unwrap();
+                return write!(out, "\x1B[?64;1;2;6;7;8;9;12;15;18;21;23;24;42;44;45;46c");
             },
             SendSecondaryDeviceAttributes => {
                 // we pretend to be a VT525 here, version 2.0
-                write!(self.out_buf, "\x1B[>65;20;1c").unwrap();
+                return write!(out, "\x1B[>65;20;1c");
             },
             CursorPositionReport => {
                 // CSI [ line ; col R
-                write!(self.out_buf, "\x1B[{};{}R", self.cursor.row() + 1, self.cursor.col() + 1).unwrap()
+                return write!(out, "\x1B[{};{}R", self.cursor.row() + 1, self.cursor.col() + 1);
             },
             ModeSet(modes) => {
                 for m in modes {
@@ -340,34 +334,13 @@ impl Term {
             },
         }
 
+        Ok(())
+
         // TODO: Propagate focus information
         // \x1B[I for focus in and \x1B[O for focus out
     }
 
-    pub fn has_output(&self) -> bool {
-        !self.out_buf.is_empty()
-    }
-
-    /// Queues up a character write on the output buffer
-    // TODO: Doesn't really belong here, but needs access to out_buf
-    pub fn queue_character(&mut self, c: char) {
-        write!(self.out_buf, "{}", c).unwrap()
-    }
-
-    pub fn write_output<W: io::Write>(&mut self, mut w: W) -> io::Result<usize> {
-        w.write(&self.out_buf).map(|n| unsafe {
-            debug_assert!(n <= self.out_buf.len());
-
-            let new_len = self.out_buf.len() - n;
-            let buf     = self.out_buf.as_mut_ptr();
-
-            ptr::copy(buf.offset(n as isize), buf, new_len);
-
-            self.out_buf.truncate(new_len);
-
-            info!("out_buf remaining: {}", new_len);
-
-            n
-        })
+    pub fn get_title(&self) -> &str {
+        &self.title
     }
 }

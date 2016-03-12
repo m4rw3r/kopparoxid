@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex};
 use std::os::unix::io::{AsRawFd, FromRawFd};
-use std::io;
+use std::io::{self, Write};
 use std::thread;
+use std::ptr;
 
 use libc;
 
@@ -46,6 +47,83 @@ struct TermHandler {
     /// Terminal data
     term:      Arc<Mutex<Term>>,
     win:       WindowProxy,
+    /// Output buffer with data to write to the process
+    out_buf:   Vec<u8>,
+}
+
+impl TermHandler {
+    fn write_out(&mut self, event_loop: &mut EventLoop<Self>) -> io::Result<usize> {
+        if !self.out_buf.is_empty() {
+            self.shell.write(&self.out_buf).map(|n| {
+                debug_assert!(n <= self.out_buf.len());
+
+                unsafe {
+                    let new_len = self.out_buf.len() - n;
+                    let buf     = self.out_buf.as_mut_ptr();
+
+                    ptr::copy(buf.offset(n as isize), buf, new_len);
+
+                    self.out_buf.truncate(new_len);
+                }
+
+                info!("wrote {}", n);
+
+                if self.out_buf.is_empty() {
+                    // Reregister for reads again
+                    event_loop.reregister(&self.shell, INPUT, EventSet::readable(), PollOpt::level()).unwrap();
+                } else {
+                    info!("queueing up more writes");
+
+                    // Switch to waiting for writable
+                    event_loop.reregister(&self.shell, WRITE, EventSet::writable(), PollOpt::edge() | PollOpt::oneshot()).unwrap();
+                }
+
+                n
+            })
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Parses control codes, returns true if codes were parsed.
+    fn parse(&mut self) -> bool {
+        // If we need to update
+        let mut dirty = false;
+        let mut t     = self.term.lock().unwrap();
+
+        loop {
+            match self.buf.parse(ctrl::parser) {
+                Ok(s) => {
+                    trace!("{:?}", s);
+
+                    match s {
+                        // Nothing to do
+                        ctrl::Seq::SetIconName(_) => {}
+                        s => {
+                            dirty = true;
+
+                            t.handle(s, &mut self.out_buf).unwrap();
+                        }
+                    }
+                },
+                Err(StreamError::Retry)            => break,
+                Err(StreamError::EndOfInput)       => break,
+                // Buffer has tried to load but failed to get a complete parse anyway,
+                // skip and render frame, wait until next frame to continue parse:
+                Err(StreamError::Incomplete(_))    => break,
+                Err(StreamError::IoError(e))       => {
+                    error!("IoError: {:?}", e);
+
+                    break;
+                },
+                Err(StreamError::ParseError(b, e)) => {
+                    error!("{:?} at {:?}", e, unsafe { ::std::str::from_utf8_unchecked(b) });
+                }
+            }
+        }
+
+        dirty
+    }
 }
 
 impl Handler for TermHandler {
@@ -59,67 +137,13 @@ impl Handler for TermHandler {
             INPUT => {
                 assert!(events.is_readable());
 
+                // TODO: Check fill rate
                 self.buf.fill().unwrap();
 
-                // If we need to update
-                let mut dirty = false;
-                let mut t     = self.term.lock().unwrap();
+                let dirty = self.parse();
 
-                loop {
-                    match self.buf.parse(ctrl::parser) {
-                        Ok(s) => {
-                            /*if let ctrl::Seq::CharAttr(_) = s {}
-                            else if let ctrl::Seq::PrivateModeSet(_) = s {}
-                            else if let ctrl::Seq::PrivateModeReset(_) = s {}
-                            else if let ctrl::Seq::Unicode(c) = s {
-                                trace!("{}", ::std::char::from_u32(c).unwrap());
-                            }
-                            else {
-                            }*/
-                            trace!("{:?}", s);
-
-                            match s {
-                                // Nothing to do
-                                ctrl::Seq::SetIconName(_) => {}
-                                ctrl::Seq::SetWindowTitle(ref title) => {
-                                    // TODO: Send to main thread
-                                    // display.get_window().map(|w| w.set_title(title));
-
-                                    continue;
-                                },
-                                s => {
-                                    dirty = true;
-
-                                    t.handle(s);
-                                }
-                            }
-                        },
-                        Err(StreamError::Retry)            => break,
-                        Err(StreamError::EndOfInput)       => break,
-                        // Buffer has tried to load but failed to get a complete parse anyway,
-                        // skip and render frame, wait until next frame to continue parse:
-                        Err(StreamError::Incomplete(_))    => break,
-                        Err(StreamError::IoError(e))       => {
-                            error!("IoError: {:?}", e);
-
-                            break;
-                        },
-                        Err(StreamError::ParseError(b, e)) => {
-                            error!("{:?} at {:?}", e, unsafe { ::std::str::from_utf8_unchecked(b) });
-                        }
-                    }
-                }
-
-                if t.has_output() {
-                    // We can write here too, READ implies WRITE for short delays
-                    info!("wrote {}", t.write_output(&mut self.shell).unwrap());
-
-                    if t.has_output() {
-                        info!("queueing up more writes");
-
-                        event_loop.register(&self.shell, WRITE, EventSet::writable(), PollOpt::oneshot()).unwrap();
-                    }
-                }
+                // We can attempt to write here too, READ implies WRITE for short delays
+                self.write_out(event_loop).unwrap();
 
                 if dirty {
                     info!("waking up window event loop");
@@ -128,19 +152,7 @@ impl Handler for TermHandler {
                 }
             },
             WRITE => {
-                let mut t = self.term.lock().unwrap();
-
-                let n = t.write_output(&mut self.shell).unwrap();
-
-                info!("wrote {}", n);
-
-                if !t.has_output() {
-                    info!("writes done");
-
-                    event_loop.deregister(&self.shell).unwrap();
-
-                    event_loop.register(&self.shell, INPUT, EventSet::readable(), PollOpt::level()).unwrap();
-                }
+                self.write_out(event_loop).unwrap();
             },
             _ => unreachable!(),
         }
@@ -162,7 +174,7 @@ impl Handler for TermHandler {
                 }
             },
             Character(c) => {
-                self.term.lock().unwrap().queue_character(c);
+                write!(self.out_buf, "{}", c).unwrap();
 
                 event_loop.register(&self.shell, WRITE, EventSet::writable(), PollOpt::oneshot()).unwrap();
             }
@@ -172,9 +184,10 @@ impl Handler for TermHandler {
 
 pub fn run(m: pty::Fd, child_pid: libc::c_int, w: WindowProxy) -> (Arc<Mutex<Term>>, Sender<Message>) {
     let mut ev_loop = EventLoop::new().unwrap();
+    //
     let shell       = unsafe { UnixStream::from_raw_fd(m.as_raw_fd()) };
 
-    let t = Arc::new(Mutex::new(Term::new_with_size(10, 10)));
+    let t = Arc::new(Mutex::new(Term::new_with_size(80, 24)));
 
     ev_loop.register(&shell, INPUT, EventSet::readable(), PollOpt::level()).unwrap();
 
@@ -188,12 +201,14 @@ pub fn run(m: pty::Fd, child_pid: libc::c_int, w: WindowProxy) -> (Arc<Mutex<Ter
         term:      t.clone(),
         buf:       buf,
         win:       w,
+        out_buf:   Vec::new(),
     };
 
     let msg = ev_loop.channel();
 
     thread::spawn(move || {
         info!("Starting terminal event loop");
+
         ev_loop.run(&mut handler).unwrap();
     });
 
