@@ -69,6 +69,9 @@ impl<C: Manager> GlTerm<C> {
                 outputs_srgb: true,
                 vertex: "   #version 410
 
+                    uniform vec2 scale;
+                    uniform vec2 offset;
+
                     in vec2 xy;
                     in vec3 rgb;
                     in vec2 st;
@@ -77,7 +80,7 @@ impl<C: Manager> GlTerm<C> {
                     out vec2 pass_st;
 
                     void main() {
-                        gl_Position = vec4(xy, 0, 1);
+                        gl_Position = vec4(offset + xy * scale, 0, 1);
 
                         pass_rgb = rgb;
                         pass_st  = st;
@@ -103,13 +106,16 @@ impl<C: Manager> GlTerm<C> {
                 outputs_srgb: true,
                 vertex: "   #version 410
 
+                    uniform vec2 scale;
+                    uniform vec2 offset;
+
                     in vec2 xy;
                     in vec3 rgb;
 
                     out vec3 pass_rgb;
 
                     void main() {
-                        gl_Position = vec4(xy, 0, 1);
+                        gl_Position = vec4(offset + xy * scale, 0, 1);
 
                         pass_rgb = rgb;
                     }
@@ -162,16 +168,16 @@ impl<C: Manager> GlTerm<C> {
         self.glyphs.get(f, chr).or_else(|| self.glyphs.get(FontStyle::Regular, chr))
     }
 
-    fn load_bg_vertices(&mut self, t: &term::Term, scale: (f32, f32), offset: (f32, f32)) {
+    fn load_bg_vertices(&mut self, t: &term::Term) {
         let cellsize = self.cellsize;
 
         self.bg_buffer.truncate(0);
 
         t.cells(|c| {
-            let left   = offset.0 + c.col() as f32 * cellsize.0 * scale.0;
-            let right  = left + cellsize.0 * scale.0;
-            let bottom = offset.1 - (c.row() + 1) as f32 * cellsize.1 * scale.1;
-            let top    = bottom + cellsize.1 * scale.1;
+            let left   = c.col() as f32 * cellsize.0;
+            let right  = left + cellsize.0;
+            let bottom = -((c.row() + 1) as f32) * cellsize.1;
+            let top    = bottom + cellsize.1;
             let rgb    = self.colors.bg(c.bg());
 
             self.bg_buffer.push(ColoredVertex { xy: [left,  bottom], rgb: rgb });
@@ -184,7 +190,7 @@ impl<C: Manager> GlTerm<C> {
         })
     }
 
-    fn load_fg_vertices(&mut self, t: &term::Term, scale: (f32, f32), offset: (f32, f32)) {
+    fn load_fg_vertices(&mut self, t: &term::Term) {
         use term::char_mode::BOLD;
 
         let cellsize = self.cellsize;
@@ -215,11 +221,10 @@ impl<C: Manager> GlTerm<C> {
                         c.fg()
                     });
 
-                    let left     = offset.0 + (c.col() as f32 * cellsize.0 + g.metrics.padding.left as f32) * scale.0;
-                    let bottom   = offset.1 - ((c.row() + 1) as f32 * cellsize.1 - g.metrics.padding.bottom as f32) * scale.1;
-                    let charsize = (g.metrics.width as f32 * scale.0, g.metrics.height as f32 * scale.1);
+                    let left     = c.col() as f32 * cellsize.0;
+                    let bottom   = -((c.row() + 1) as f32) * cellsize.1;
 
-                    g.vertices((left, bottom), charsize, fg)
+                    g.vertices((left, bottom), fg)
                 }).map(|vs| {
                     for v in vs.into_iter() {
                         self.fg_buffer.push(*v);
@@ -247,12 +252,14 @@ impl<C: Manager> GlTerm<C> {
 
         self.load_glyphs(t);
 
-        self.load_bg_vertices(t, scale, offset);
-        self.load_fg_vertices(t, scale, offset);
+        self.load_bg_vertices(t);
+        self.load_fg_vertices(t);
 
         let uniforms = uniform! {
             tex: glium::uniforms::Sampler::new(self.glyphs.texture())
                 .magnify_filter(glium::uniforms::MagnifySamplerFilter::Nearest),
+            scale:  scale,
+            offset: offset,
         };
         let params = glium::DrawParameters {
             blend: Blend {

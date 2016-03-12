@@ -302,17 +302,17 @@ pub struct Glyph<'a> {
 }
 
 impl<'a> Glyph<'a> {
-    /// Returns a list of vertices for two triangles making up the quad for this texture.
+    /// Returns a list of non-scaled vertices for two triangles making up the quad for this texture.
     ///
-    /// ``p`` is the position of the lower-left corner of the quad, ``s`` is the width and
-    /// height of the quad. ``rgb`` is the foreground RGB color.
+    /// `p` is the position of the lower-left corner of the quad in pixels. `rgb` is the foreground
+    /// sRGB color.
     #[inline]
-    pub fn vertices(&self, p: (f32, f32), s: (f32, f32), rgb: [f32; 3]) -> [TexturedVertex; 6] {
+    pub fn vertices(&self, p: (f32, f32), rgb: [f32; 3]) -> [TexturedVertex; 6] {
         // vertex positions
-        let l =  p.0        as f32;
-        let r = (p.0 + s.0) as f32;
-        let b =  p.1        as f32;
-        let t = (p.1 + s.1) as f32;
+        let l = p.0 + self.metrics.padding.left   as f32;
+        let r =   l + self.metrics.width          as f32;
+        let b = p.1 + self.metrics.padding.bottom as f32;
+        let t =   b + self.metrics.height         as f32;
 
         [
             TexturedVertex { xy: [l, b], rgb: rgb, st: [self.left,  self.top   ] },
