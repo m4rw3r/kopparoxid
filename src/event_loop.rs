@@ -145,7 +145,7 @@ impl Handler for TermHandler {
 
         // Usually read implies write
         if events.is_writable() {
-            self.write_out(event_loop).unwrap();
+            self.write_out().unwrap();
         }
 
         if self.out_buf.is_empty() {
