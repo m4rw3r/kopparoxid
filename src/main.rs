@@ -1,38 +1,34 @@
 #[macro_use]
 extern crate bitflags;
+extern crate chomp;
+extern crate env_logger;
 extern crate errno;
 extern crate freetype as ft;
 #[macro_use]
 extern crate glium;
 extern crate glutin;
 extern crate libc;
-extern crate time;
-extern crate chomp;
 #[macro_use]
 extern crate log;
-extern crate env_logger;
+extern crate mio;
 
 extern crate kopparoxid_term as term;
 
 mod pty;
 mod gl;
+mod event_loop;
 
 use std::io;
 use std::process;
-use std::thread;
-use std::time::Duration;
-
-use chomp::buffer::StreamError;
-use chomp::buffer::Source;
-use chomp::buffer::Stream;
 
 use gl::glyph;
 
 use term::color;
-use term::ctrl;
+
+use event_loop::Message;
 
 fn main() {
-    let (mut m, s) = pty::open().unwrap();
+    let (m, s) = pty::open().unwrap();
 
     match unsafe { libc::fork() } {
         -1  => panic!(io::Error::last_os_error()),
@@ -43,7 +39,7 @@ fn main() {
             info!("master, child pid: {}", pid);
 
             // TODO: How to set the buffer size of the pipe here?
-            m.set_noblock();
+            //m.set_noblock();
 
             window(m, pid)
         }
@@ -66,14 +62,20 @@ fn window(m: pty::Fd, child_pid: libc::c_int) {
     use glium::DisplayBuild;
     use gl::term::FontStyle;
 
-    let mut out = m.clone();
+    info!("creating window");
+
+    //let mut out = m.clone();
     let display = glutin::WindowBuilder::new()
         .with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (3, 3)))
         .with_srgb(Some(true))
         .build_glium()
         .unwrap();
 
-    let scale = display.get_window().map(|w| w.hidpi_factor()).unwrap_or(1.0);
+
+    let mut ft_lib = ft::Library::init().unwrap();
+    let mut f_map  = glyph::Map::new(&display);
+    let scale      = display.get_window().map(|w| w.hidpi_factor()).unwrap_or(1.0);
+    let proxy      = display.get_window().unwrap().create_window_proxy();
 
     let faces = [
         (FontStyle::Regular,    "./DejaVuSansMono/DejaVu Sans Mono for Powerline.ttf"),
@@ -82,153 +84,70 @@ fn window(m: pty::Fd, child_pid: libc::c_int) {
         (FontStyle::BoldItalic, "./DejaVuSansMono/DejaVu Sans Mono Bold Oblique for Powerline.ttf"),
     ];
 
-    let mut ft_lib = ft::Library::init().unwrap();
-    let mut f_map  = glyph::Map::new(&display);
-
     for &(f, t) in &faces {
         f_map.add_renderer(f, load_font(&mut ft_lib, t, (FONT_SIZE * scale) as u32)).unwrap();
     }
 
-    let cell = f_map.cell_size();
-
-    let mut t = term::Term::new_with_size(10, 10);
+    let cell  = f_map.cell_size();
     let mut g = gl::term::GlTerm::new(&display, color::XtermDefault, f_map).unwrap();
 
+    // Default title
     display.get_window().map(|w| w.set_title("Kopparoxid"));
 
     unsafe { display.get_window().map(|w| w.make_current()); };
 
-    let mut accumulator    = 0;
-    let mut previous_clock = time::precise_time_ns();
-    let mut prev_bufsize   = display.get_framebuffer_dimensions();
+    // Start terminal
+    let (t, msg) = event_loop::run(m, child_pid, proxy);
 
-    let tsize = (prev_bufsize.0 / cell.0, prev_bufsize.1 / cell.1);
+    let mut bufsize = display.get_framebuffer_dimensions();
 
-    t.resize((tsize.0 as usize, tsize.1 as usize));
+    msg.send(Message::Resize{
+        width:  bufsize.0 / cell.0,
+        height: bufsize.1 / cell.1,
+        x:      bufsize.0,
+        y:      bufsize.1,
+    }).unwrap();
 
-    // TODO: Merge with SIGWINCH
-    out.set_window_size(tsize, prev_bufsize).unwrap();
+    {
+        let mut target = display.draw();
 
-    // Message all processes in the child process group
-    match unsafe { libc::kill(-child_pid, libc::SIGWINCH) } {
-        -1 => panic!("kill(child, SIGWINCH) failed: {:?}", io::Error::last_os_error()),
-        _  => {},
+        g.draw(&mut target, &t.lock().unwrap(), bufsize, (-1.0, 1.0));
+
+        target.finish().unwrap();
     }
 
-    let mut buf = Source::from_read(m, chomp::buffer::FixedSizeBuffer::new());
+    info!("Window: waiting for events");
 
-    buf.set_autofill(false);
+    for i in display.wait_events() {
+        match i {
+            glutin::Event::Closed               => process::exit(0),
+            glutin::Event::ReceivedCharacter(c) => msg.send(Message::Character(c)).unwrap(),
+            glutin::Event::MouseMoved(_) => {},
+            glutin::Event::Awakened => {
+                info!("Window: rendering");
 
-    loop {
-        let now = time::precise_time_ns();
-        accumulator += now - previous_clock;
-        previous_clock = now;
-        const FIXED_TIME_STAMP: u64 = 16666667;
+                let new_bufsize = display.get_framebuffer_dimensions();
 
-        while accumulator >= FIXED_TIME_STAMP {
-            accumulator -= FIXED_TIME_STAMP;
+                // OS X does not fire glutin::Event::Resize from poll_events(), need to check manually
+                // TODO: Proper resize handling
+                if new_bufsize != bufsize {
+                    bufsize = new_bufsize;
 
-            buf.fill().unwrap();
-
-            loop {
-                match buf.parse(ctrl::parser) {
-                    Ok(s) => {
-                        /*if let ctrl::Seq::CharAttr(_) = s {}
-                        else if let ctrl::Seq::PrivateModeSet(_) = s {}
-                        else if let ctrl::Seq::PrivateModeReset(_) = s {}
-                        else if let ctrl::Seq::Unicode(c) = s {
-                            trace!("{}", ::std::char::from_u32(c).unwrap());
-                        }
-                        else {
-                            trace!("{:?}", s);
-                        }*/
-
-                        match s {
-                            // Nothing to do
-                            ctrl::Seq::SetIconName(_) => {}
-                            ctrl::Seq::SetWindowTitle(ref title) => {
-                                display.get_window().map(|w| w.set_title(title));
-
-                                continue;
-                            },
-                            s => t.handle(s),
-                        }
-                    },
-                    Err(StreamError::Retry)            => break,
-                    Err(StreamError::EndOfInput)       => break,
-                    // Buffer has tried to load but failed to get a complete parse anyway,
-                    // skip and render frame, wait until next frame to continue parse:
-                    Err(StreamError::Incomplete(_))    => break,
-                    Err(StreamError::IoError(e))       => {
-                        error!("IoError: {:?}", e);
-
-                        break;
-                    },
-                    Err(StreamError::ParseError(b, e)) => {
-                        error!("{:?} at {:?}", e, unsafe { ::std::str::from_utf8_unchecked(b) });
-                    }
+                    msg.send(Message::Resize{
+                        width:  bufsize.0 / cell.0,
+                        height: bufsize.1 / cell.1,
+                        x:      bufsize.0,
+                        y:      bufsize.1,
+                    }).unwrap();
                 }
-            }
-
-            for i in display.poll_events() {
-                match i {
-                    glutin::Event::Closed               => process::exit(0),
-                    glutin::Event::ReceivedCharacter(c) => {
-                        use std::io::Write;
-                        let mut s = String::with_capacity(c.len_utf8());
-
-                        s.push(c);
-
-                        out.write(s.as_ref()).unwrap();
-                    },
-                    glutin::Event::MouseMoved(_) => {},
-                    _                            => {} // println!("w {:?}", i)
-                }
-            }
-
-            let buf_size = display.get_framebuffer_dimensions();
-
-            // OS X does not fire glutin::Event::Resize from poll_events(), need to check manually
-            if buf_size != prev_bufsize {
-                prev_bufsize = buf_size;
-
-                let tsize = (prev_bufsize.0 / cell.0, prev_bufsize.1 / cell.1);
-
-                t.resize((tsize.0 as usize, tsize.1 as usize));
-
-                // TODO: Merge with SIGWINCH
-                out.set_window_size(tsize, prev_bufsize).unwrap();
-
-                // Message all processes in the child process group
-                match unsafe { libc::kill(-child_pid, libc::SIGWINCH) } {
-                    -1 => panic!("kill(child, SIGWINCH) failed: {:?}", io::Error::last_os_error()),
-                    _  => {},
-                }
-            }
-
-            if t.is_dirty() {
-                t.write_output(&mut out).unwrap();
 
                 let mut target = display.draw();
 
-                g.draw(&mut target, &t, buf_size, (-1.0, 1.0));
+                g.draw(&mut target, &t.lock().unwrap(), bufsize, (-1.0, 1.0));
 
                 target.finish().unwrap();
-
-                t.set_dirty(false);
-            }
+            },
+            _                            => {} // println!("w {:?}", i)
         }
-
-        thread::sleep(Duration::from_millis((FIXED_TIME_STAMP - accumulator) / 1000000));
-    }
-}
-
-struct Window {
-    child_pid: libc::c_int,
-}
-
-impl Window {
-    fn resize(&mut self) {
-
     }
 }

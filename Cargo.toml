@@ -7,13 +7,13 @@ authors = ["Martin Wernstål <m4rw3r@gmail.com>"]
 bitflags    = "*"
 chomp       = "*"
 errno       = "*"
-time        = "*"
 freetype-rs = "*"
 glium       = "*"
 glutin      = "*"
 libc        = { git = "https://github.com/rust-lang/libc.git" }
 log         = "*"
 num         = "*"
+mio         = "*"
 env_logger  = "*"
 
 kopparoxid-term = { path = "./term" }

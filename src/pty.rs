@@ -1,14 +1,16 @@
-use errno;
-use libc;
 use std::ffi;
 use std::io;
 use std::process;
 use std::ptr;
 use std::env;
+use std::os::unix::io::{AsRawFd, RawFd};
+
+use errno;
+use libc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Fd {
-   fd: libc::c_int
+   fd: RawFd
 }
 
 // OS X:
@@ -21,26 +23,9 @@ use libc::TIOCSWINSZ;
 impl Fd {
     /// Overrides the specified file-descriptor given with the
     /// internal file-descriptor.
-    pub fn override_fd(&self, fd: libc::c_int) -> io::Result<()> {
+    pub fn override_fd(&self, fd: RawFd) -> io::Result<()> {
         unsafe {
             match libc::dup2(self.fd, fd) {
-                -1 => Err(io::Error::last_os_error()),
-                _  => Ok(()),
-            }
-        }
-    }
-
-    /// Sets the window-size in terminal cells and window pixels (width, height).
-    pub fn set_window_size(&mut self, term: (u32, u32), pixels: (u32, u32)) -> io::Result<()> {
-        unsafe {
-            let ws = libc::winsize {
-                ws_row:    term.1 as libc::c_ushort,
-                ws_col:    term.0 as libc::c_ushort,
-                ws_xpixel: pixels.0 as libc::c_ushort,
-                ws_ypixel: pixels.1 as libc::c_ushort,
-            };
-
-            match libc::ioctl(self.fd, TIOCSWINSZ, &ws) {
                 -1 => Err(io::Error::last_os_error()),
                 _  => Ok(()),
             }
@@ -96,11 +81,17 @@ impl io::Write for Fd {
     }
 }
 
+impl AsRawFd for Fd {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd
+    }
+}
+
 /// Opens a new pseudoterminal returning the filedescriptors for master
 /// and slave.
 pub fn open() -> io::Result<(Fd, Fd)> {
-    let mut m: libc::c_int = 0;
-    let mut s: libc::c_int = 0;
+    let mut m: RawFd = 0;
+    let mut s: RawFd = 0;
 
     let mut ws = libc::winsize {
         ws_row:    0,
@@ -113,6 +104,23 @@ pub fn open() -> io::Result<(Fd, Fd)> {
         match libc::openpty(&mut m, &mut s, ptr::null_mut(), ptr::null_mut(), &mut ws) {
             -1 => Err(io::Error::last_os_error()),
             _  => Ok((Fd{fd: m}, Fd{fd: s}))
+        }
+    }
+}
+
+/// Sets the window-size in terminal cells and window pixels (width, height).
+pub fn set_window_size(fd: RawFd, term: (u32, u32), pixels: (u32, u32)) -> io::Result<()> {
+    unsafe {
+        let ws = libc::winsize {
+            ws_row:    term.1 as libc::c_ushort,
+            ws_col:    term.0 as libc::c_ushort,
+            ws_xpixel: pixels.0 as libc::c_ushort,
+            ws_ypixel: pixels.1 as libc::c_ushort,
+        };
+
+        match libc::ioctl(fd, TIOCSWINSZ, &ws) {
+            -1 => Err(io::Error::last_os_error()),
+            _  => Ok(()),
         }
     }
 }
