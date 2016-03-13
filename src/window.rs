@@ -158,12 +158,15 @@ impl<C> Window<C>
                     {
                         // TODO: See if it is possible (and might make a difference!) to lock the
                         // terminal data for a smaller piece of code (ie. just make the buffers, not
-                        // actually call the render)
+                        // actually call the draw calls)
                         let t = terminal.lock().unwrap();
 
                         self.display.get_window().map(|w| w.set_title(t.get_title()));
 
-                        self.gl.draw(&mut target, &t, bufsize, (-1.0, 1.0));
+                        let width_offset  = 1.0 * (bufsize.0 % cell.0) as f32 / bufsize.0 as f32;
+                        let height_offset = 1.0 * (bufsize.1 % cell.1) as f32 / bufsize.1 as f32;
+
+                        self.gl.draw(&mut target, &t, bufsize, (width_offset, height_offset));
                     }
 
                     target.finish().unwrap();

@@ -89,6 +89,7 @@ impl<C: Manager> GlTerm<C> {
                 fragment: "   #version 410
 
                     uniform sampler2D tex;
+                    uniform vec2 st_bias;
 
                     in vec3 pass_rgb;
                     in vec2 pass_st;
@@ -96,7 +97,7 @@ impl<C: Manager> GlTerm<C> {
                     out vec4 out_color;
 
                     void main() {
-                        out_color = vec4(pass_rgb, texture(tex, pass_st).r);
+                        out_color = vec4(pass_rgb, texture(tex, pass_st + st_bias).r);
                     }
                 ",
             },
@@ -258,8 +259,12 @@ impl<C: Manager> GlTerm<C> {
         let uniforms = uniform! {
             tex: glium::uniforms::Sampler::new(self.glyphs.texture())
                 .magnify_filter(glium::uniforms::MagnifySamplerFilter::Nearest),
+            // All vertex coordinates are in pixels, scale them to device position
             scale:  scale,
-            offset: offset,
+            // Origin is in center of screen offset to left and towards the top to fill
+            offset: (-1.0 + offset.0, 1.0 - offset.1),
+            // bias for the texture offset to prevent rounding errors due to offset
+            st_bias: (1.0 / 8192.0 as f32, -1.0 / 8192.0 as f32),
         };
         let params = glium::DrawParameters {
             blend: Blend {

@@ -69,7 +69,6 @@ bitflags!{
         // TODO: Implement
         const BLINK       = 0b00000100,
         /// If the cursor should be visible
-        // TODO: Implement
         const SHOW_CURSOR = 0b00001000,
         /// If we should send focus events
         const SEND_FOCUS  = 0b00010000,
@@ -79,7 +78,7 @@ bitflags!{
 impl Default for Mode {
     #[inline]
     fn default() -> Self {
-        Mode::empty()
+        SHOW_CURSOR | BLINK
     }
 }
 
