@@ -161,13 +161,15 @@ impl<C> Window<C>
                         // actually call the draw calls)
                         let t = terminal.lock().unwrap();
 
+                        self.gl.load_vertices(&t);
+
                         self.display.get_window().map(|w| w.set_title(t.get_title()));
-
-                        let width_offset  = 1.0 * (bufsize.0 % cell.0) as f32 / bufsize.0 as f32;
-                        let height_offset = 1.0 * (bufsize.1 % cell.1) as f32 / bufsize.1 as f32;
-
-                        self.gl.draw(&mut target, &t, bufsize, (width_offset, height_offset));
                     }
+
+                    let width_offset  = 1.0 * (bufsize.0 % cell.0) as f32 / bufsize.0 as f32;
+                    let height_offset = 1.0 * (bufsize.1 % cell.1) as f32 / bufsize.1 as f32;
+
+                    self.gl.draw(&mut target, bufsize, (width_offset, height_offset));
 
                     target.finish().unwrap();
 

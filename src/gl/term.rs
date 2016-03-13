@@ -49,10 +49,14 @@ pub struct GlTerm<C: Manager> {
     fg_buffer: Vec<glyph::TexturedVertex>,
     /// Vertex buffer for background cells
     bg_buffer: Vec<ColoredVertex>,
+    /// Fixed size buffer for cursor, Empty = no cursor to draw
+    cu_buffer: Option<[ColoredVertex; 6]>,
     /// Shader for rendering foreground text
     fg_shader: glium::Program,
     /// Shader for rendering background vertices
     bg_shader: glium::Program,
+    /// Shader for rendering cursor
+    cu_shader: glium::Program,
     /// Color code converter
     colors:    C,
     /// Cellsize is the pixel-size of a cell
@@ -133,6 +137,38 @@ impl<C: Manager> GlTerm<C> {
                 ",
             },
         ));
+        // TODO: Different cursors
+        let cu_shader = try!(program!(&context,
+            410 => {
+                outputs_srgb: true,
+                vertex: "   #version 410
+
+                    uniform vec2 scale;
+                    uniform vec2 offset;
+
+                    in vec2 xy;
+                    in vec3 rgb;
+
+                    out vec3 pass_rgb;
+
+                    void main() {
+                        gl_Position = vec4(offset + xy * scale, 0, 1);
+
+                        pass_rgb = rgb;
+                    }
+                ",
+                fragment: "   #version 410
+
+                    in vec3 pass_rgb;
+
+                    out vec4 out_color;
+
+                    void main() {
+                        out_color = vec4(pass_rgb, 0.5);
+                    }
+                ",
+            },
+        ));
 
         let cellsize = glyph_map.cell_size();
 
@@ -141,8 +177,10 @@ impl<C: Manager> GlTerm<C> {
             glyphs:    glyph_map,
             fg_buffer: Vec::new(),
             bg_buffer: Vec::new(),
+            cu_buffer: None,
             fg_shader: fg_shader,
             bg_shader: bg_shader,
+            cu_shader: cu_shader,
             colors:    colors,
             cellsize:  (cellsize.0 as f32, cellsize.1 as f32),
         })
@@ -234,13 +272,40 @@ impl<C: Manager> GlTerm<C> {
         })
     }
 
+    pub fn load_vertices(&mut self, t: &term::Term) {
+        self.load_glyphs(t);
+
+        self.load_bg_vertices(t);
+        self.load_fg_vertices(t);
+
+
+        self.cu_buffer = t.get_cursor().map(|c| {
+            // TODO: Simplify, maybe move cellsize into uniforms?
+            let left   = c.0 as f32 * self.cellsize.0;
+            let right  = left + self.cellsize.0;
+            let bottom = -((c.1 + 1) as f32) * self.cellsize.1;
+            let top    = bottom + self.cellsize.1;
+            let rgb    = [1.0, 1.0, 1.0];
+
+            [
+                ColoredVertex { xy: [left,  bottom], rgb: rgb },
+                ColoredVertex { xy: [left,  top],    rgb: rgb },
+                ColoredVertex { xy: [right, top],    rgb: rgb },
+
+                ColoredVertex { xy: [right, top],    rgb: rgb },
+                ColoredVertex { xy: [right, bottom], rgb: rgb },
+                ColoredVertex { xy: [left,  bottom], rgb: rgb },
+            ]
+        });
+    }
+
     /// Draws the terminal onto ``target``.
     ///
     ///  * ``t`` is the terminal data to draw.
     ///  * ``fb_dim`` is the framebuffer dimensions in pixels which is needed to avoid blurry
     ///    text and/or stretching.
     ///  * ``offset`` is the gl-offset to render at.
-    pub fn draw<T>(&mut self, target: &mut T, t: &term::Term, fb_dim: (u32, u32), offset: (f32, f32))
+    pub fn draw<T>(&mut self, target: &mut T, fb_dim: (u32, u32), offset: (f32, f32))
       where T: glium::Surface {
         use glium::index;
         use glium::draw_parameters::Blend;
@@ -250,11 +315,6 @@ impl<C: Manager> GlTerm<C> {
         let indices = index::NoIndices(index::PrimitiveType::TrianglesList);
         // This assumes that the framebuffer coordinates are [-1, -1] to [1, 1]
         let scale   = (2.0 / fb_dim.0 as f32, 2.0 / fb_dim.1 as f32);
-
-        self.load_glyphs(t);
-
-        self.load_bg_vertices(t);
-        self.load_fg_vertices(t);
 
         let uniforms = uniform! {
             tex: glium::uniforms::Sampler::new(self.glyphs.texture())
@@ -280,6 +340,7 @@ impl<C: Manager> GlTerm<C> {
         // TODO: Can this be reused?
         let bg_buffer = glium::VertexBuffer::new(&self.context, &self.bg_buffer).unwrap();
         let fg_buffer = glium::VertexBuffer::new(&self.context, &self.fg_buffer).unwrap();
+        let cu_buffer = self.cu_buffer.as_ref().map(|b| glium::VertexBuffer::new(&self.context, b).unwrap());
 
         let rgb = self.colors.fill();
         let r   = rgb[0];
@@ -290,6 +351,10 @@ impl<C: Manager> GlTerm<C> {
 
         target.draw(&bg_buffer, &indices, &self.bg_shader, &uniforms, &params).unwrap();
         target.draw(&fg_buffer, &indices, &self.fg_shader, &uniforms, &params).unwrap();
+
+        if let Some(b) = cu_buffer {
+            target.draw(&b, &indices, &self.cu_shader, &uniforms, &params).unwrap();
+        }
     }
 
     pub fn cell_size(&self) -> (u32, u32) {
