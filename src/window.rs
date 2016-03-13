@@ -3,7 +3,7 @@ use std::process;
 use std::sync::{Arc, Mutex};
 
 use event_loop::Message;
-use gl::glyph::{self, FreeType, Map, Renderer};
+use gl::glyph::{self, FreeType, FreeTypeConfig, Map, Renderer};
 use gl::glyph::Error as GlyphError;
 use gl::term::{GlTerm, FontStyle};
 use glium::{Display, DisplayBuild};
@@ -18,15 +18,17 @@ use mio::Sender;
 
 #[derive(Debug)]
 pub struct Font<'a> {
-    pub path: &'a Path,
-    pub size: u32,
+    pub path:   &'a Path,
+    pub size:   u32,
+    pub config: FreeTypeConfig,
 }
 
 impl<'a> Font<'a> {
-    pub fn new<P: AsRef<Path> + ?Sized>(p: &'a P, size: u32) -> Font {
+    pub fn new<P: AsRef<Path> + ?Sized>(p: &'a P, size: u32, config: FreeTypeConfig) -> Font {
         Font {
-            path: p.as_ref(),
-            size: size,
+            path:   p.as_ref(),
+            size:   size,
+            config: config,
         }
     }
 }
@@ -45,7 +47,7 @@ fn load_font<'a, 'b>(f: &'a mut ft::Library, font: Font<'b>, scale: f32) -> FtRe
     try!(ft_face.set_pixel_sizes(0, (font.size as f32 * scale) as u32));
 
     // TODO: Antialiasing and hinting settings
-    Ok(Box::new(FreeType::new(ft_face, glyph::FreeTypeMode::Greyscale)))
+    Ok(Box::new(FreeType::new(ft_face, font.config)))
 }
 
 impl<'a> FontFaces<'a> {

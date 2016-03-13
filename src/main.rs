@@ -20,13 +20,12 @@ mod gl;
 mod event_loop;
 mod window;
 
+use gl::glyph::{FreeTypeConfig, HintMode};
 use window::{Font, FontFaces, Window};
 
 use std::io;
 
 use term::color;
-
-const FONT_SIZE: u32 = 16;
 
 fn main() {
     let (m, s) = pty::open().expect("Failed to open pty");
@@ -42,11 +41,17 @@ fn main() {
 
             info!("master, child pid: {}", pid);
 
+            let size   = 16;
+            let config = FreeTypeConfig {
+                antialias: true,
+                hinting:   Some(HintMode { autohint: true, light: false }),
+            };
+
             let faces = FontFaces {
-                regular:     Font::new("./DejaVuSansMono/DejaVu Sans Mono for Powerline.ttf", FONT_SIZE),
-                bold:        Some(Font::new("./DejaVuSansMono/DejaVu Sans Mono Bold for Powerline.ttf", FONT_SIZE)),
-                italic:      Some(Font::new("./DejaVuSansMono/DejaVu Sans Mono Oblique for Powerline.ttf", FONT_SIZE)),
-                bold_italic: Some(Font::new("./DejaVuSansMono/DejaVu Sans Mono Bold Oblique for Powerline.ttf", FONT_SIZE)),
+                regular:     Font::new("./DejaVuSansMono/DejaVu Sans Mono for Powerline.ttf", size, config),
+                bold:        Some(Font::new("./DejaVuSansMono/DejaVu Sans Mono Bold for Powerline.ttf", size, config)),
+                italic:      Some(Font::new("./DejaVuSansMono/DejaVu Sans Mono Oblique for Powerline.ttf", size, config)),
+                bold_italic: Some(Font::new("./DejaVuSansMono/DejaVu Sans Mono Bold Oblique for Powerline.ttf", size, config)),
             };
 
             let mut win = Window::new(faces, color::XtermDefault);

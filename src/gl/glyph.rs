@@ -89,16 +89,39 @@ pub trait Renderer<P: PixelValue + Clone>: fmt::Debug {
     fn cell_size(&self) -> (u32, u32);
 }
 
+/// The type of hinting used for FreeType font rendering.
+///
+/// Default is `autohint=false, light=false`, ie. prefer the font's own hinting.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum FreeTypeMode{
-    Monochrome,
-    Greyscale
+pub struct HintMode {
+    /// If to force automatic hinting (`FT_LOAD_FORCE_AUTOHINT`).
+    pub autohint: bool,
+    /// If to use a lighter hinting algorithm (`FT_LOAD_TARGET_LIGHT`).
+    pub light:    bool,
+}
+
+impl Default for HintMode {
+    fn default() -> Self {
+        HintMode {
+            autohint: false,
+            light:    false,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct FreeTypeConfig {
+    /// Render mode, true=grayscale and false=monochrome rendering. Corresponds to antialiasing.
+    pub antialias: bool,
+    /// If to use hinting
+    pub hinting:   Option<HintMode>,
+
 }
 
 /// A renderer using the FreeType library to render glyphs.
 pub struct FreeType<'a> {
     ft_face:     ft::Face<'a>,
-    render_mode: FreeTypeMode,
+    render_mode: FreeTypeConfig,
     glyphsize:   (u32, u32)
 }
 
@@ -114,7 +137,7 @@ fn ft_to_pixels(fixed_float: i64) -> i32 {
 }
 
 impl<'a> FreeType<'a> {
-    pub fn new(ft_face: ft::Face<'a>, mode: FreeTypeMode) -> Self {
+    pub fn new(ft_face: ft::Face<'a>, mode: FreeTypeConfig) -> Self {
         // FIXME: Use try!
         let ft_metrics = ft_face.size_metrics().expect("Could not load size metrics from font face");
         let width      = (ft_to_pixels(ft_metrics.max_advance) + 1) as u32;
@@ -132,13 +155,15 @@ impl<'a> Renderer<u8> for FreeType<'a> {
     fn render(&mut self, glyph: usize, f: &mut FnMut(RawImage2d<u8>, Padding) -> Result<(), Error>) -> Result<(), Error> {
         use std::borrow::Cow;
 
-        let target = match self.render_mode {
-            // This is antialiasing off (TARGET_MONO):
-            FreeTypeMode::Monochrome => ft::face::RENDER | ft::face::TARGET_MONO,
-            // TODO: Setting for hinting (includes autohint, ie. Hint, LightHint, Autohint, None)
-            // TODO: Setting for antialias
-            FreeTypeMode::Greyscale  => ft::face::RENDER | ft::face::FORCE_AUTOHINT,
-        };
+        // Build target bitmask
+        let target = ft::face::RENDER |
+            if self.render_mode.antialias { ft::face::LoadFlag::empty() } else { ft::face::TARGET_MONO } |
+            if let Some(hint) = self.render_mode.hinting {
+                (if hint.autohint { ft::face::FORCE_AUTOHINT } else { ft::face::LoadFlag::empty() }) |
+                (if hint.light    { ft::face::TARGET_LIGHT   } else { ft::face::LoadFlag::empty() })
+            } else {
+                ft::face::NO_HINTING
+            };
 
         try!(self.ft_face.load_char(glyph, target));
 
@@ -155,9 +180,10 @@ impl<'a> Renderer<u8> for FreeType<'a> {
         let right  = cmp::max(0, advance - g.bitmap_left() - glyph_bitmap.width());
         let bottom = cmp::max(0, height - top - glyph_bitmap.rows());
 
-        let texdata = match self.render_mode {
-            FreeTypeMode::Monochrome => Cow::Owned(monochrome_to_grayscale(&glyph_bitmap)),
-            FreeTypeMode::Greyscale  => Cow::Borrowed(glyph_bitmap.buffer()),
+        let texdata = if self.render_mode.antialias {
+            Cow::Borrowed(glyph_bitmap.buffer())
+        } else {
+            Cow::Owned(monochrome_to_grayscale(&glyph_bitmap))
         };
 
         f(RawImage2d{
@@ -213,8 +239,8 @@ impl<K> Map<K>
     }
 
     pub fn load(&mut self, render_key: K, glyph: usize) -> Result<(), Error> {
-        let glyphs       = &mut self.glyphs;
-        let atlas        = &mut self.atlas;
+        let glyphs = &mut self.glyphs;
+        let atlas  = &mut self.atlas;
 
         if glyphs.contains_key(&(render_key.clone(), glyph)) {
             return Ok(())
@@ -235,7 +261,7 @@ impl<K> Map<K>
 
     /// Retrieves a specific glyph if it exists.
     #[inline]
-    pub fn get<'b>(&'b self, render_key: K, glyph: usize) -> Option<Glyph<'b>> {
+    pub fn get(&self, render_key: K, glyph: usize) -> Option<Glyph> {
         self.glyphs.get(&(render_key, glyph)).map(|d| {
             let g               = d.tex_rect;
             let (width, height) = self.atlas.texture_size();
@@ -331,7 +357,9 @@ const ATLAS_GROWTH_FACTOR: u32 = 2;
 
 pub struct Atlas {
     context:    Rc<Context>,
+    /// Used pixels of `texture` (left, bottom), free space above and to the right of this point.
     used:       (u32, u32),
+    /// Current height of the currently building row.
     row_height: u32,
     texture:    Texture2d,
 }
@@ -355,6 +383,8 @@ impl Atlas {
     }
 
     pub fn add<P: PixelValue + Clone>(&mut self, raw: RawImage2d<P>) -> Rect {
+        // TODO: Add 1 pixel margins to avoid rounding errors in sampling?
+
         let cur_size     = (self.texture.get_width(), self.texture.get_height().unwrap_or(1));
         let mut new_size = cur_size;
 
@@ -378,10 +408,13 @@ impl Atlas {
         if cur_size != new_size {
             use glium::Surface;
 
+            info!("Resizing texture atlas to ({}, {})", new_size.0, new_size.1);
+
             let img: Vec<_> = self.texture.read();
             let h           = self.texture.get_height().unwrap_or(1);
             let w           = self.texture.get_width();
 
+            // FIXME: Return Result
             self.texture = Texture2d::empty_with_format(&self.context, UncompressedFloatFormat::U8, MipmapsOption::NoMipmap, new_size.0, new_size.1).unwrap();
 
             self.texture.as_surface().clear_color(0.0, 0.0, 0.0, 0.0);
