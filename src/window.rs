@@ -156,10 +156,7 @@ impl<C> Window<C>
                     let mut target = self.display.draw();
 
                     {
-                        // TODO: See if it is possible (and might make a difference!) to lock the
-                        // terminal data for a smaller piece of code (ie. just make the buffers, not
-                        // actually call the draw calls)
-                        let t = terminal.lock().unwrap();
+                        let t = terminal.lock().expect("term::Term mutex poisoned");
 
                         self.gl.load_vertices(&t);
 

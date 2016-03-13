@@ -82,7 +82,7 @@ impl TermHandler {
     fn parse(&mut self) -> bool {
         // If we need to update
         let mut dirty = false;
-        let mut t     = self.term.lock().unwrap();
+        let mut t     = self.term.lock().expect("term::Term mutex poisoned");
 
         loop {
             match self.buf.parse(ctrl::parser) {
@@ -190,7 +190,7 @@ impl Handler for TermHandler {
 
         match msg {
             Resize{ width, height, x, y } => {
-                self.term.lock().unwrap().resize((width as usize, height as usize));
+                self.term.lock().expect("term::Term mutex poisoned").resize((width as usize, height as usize));
 
                 pty::set_window_size(self.shell.as_raw_fd(), (width, height), (x, y)).unwrap();
 
@@ -207,7 +207,7 @@ impl Handler for TermHandler {
             },
             Focus(got_focus) => {
                 // Check mode for focus
-                if self.term.lock().unwrap().send_focus_events() {
+                if self.term.lock().expect("term::Term mutex poisoned").send_focus_events() {
                     if got_focus {
                         write!(self.out_buf, "\x1B[I").unwrap();
                     } else {
