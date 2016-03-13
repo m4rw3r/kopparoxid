@@ -336,6 +336,7 @@ fn parse_private_mode(buffer: &[u8]) -> Result<Vec<PrivateMode>, Error> {
             12   => i.ret(CursorBlink),
             25   => i.ret(ShowCursor),
             47   => i.ret(AlternateScreenBuffer),
+            1004 => i.ret(SendFocusEvents),
             1047 => i.ret(AlternateScreenBuffer),
             1048 => i.ret(SaveCursor),
             1049 => i.ret(SaveCursorAlternateBufferClear),

@@ -37,6 +37,8 @@ pub enum Message {
     },
     /// Received character
     Character(char),
+    /// Terminal received/lost focus
+    Focus(bool),
 }
 
 struct TermHandler {
@@ -93,6 +95,8 @@ impl TermHandler {
                         // TODO: Implement
                         ctrl::Seq::Bell => {}
                         s => {
+                            // TODO: can we do something better here to determine if we actually
+                            // need to update?
                             dirty = true;
 
                             t.handle(s, &mut self.out_buf).unwrap();
@@ -110,12 +114,28 @@ impl TermHandler {
                     break;
                 },
                 Err(StreamError::ParseError(b, e)) => {
-                    error!("{:?} at {:?}", e, unsafe { ::std::str::from_utf8_unchecked(b) });
+                    error!("{:?} at {:?}", e, String::from_utf8_lossy(b));
                 }
             }
         }
 
         dirty
+    }
+
+    /// Sets the event loop to only listen for readable.
+    fn set_read(&self, event_loop: &mut EventLoop<Self>) {
+        event_loop.reregister(&self.shell,
+                              INPUT,
+                              EventSet::readable(),
+                              PollOpt::level()).unwrap();
+    }
+
+    /// Sets the event loop to listen for both readable and writable events.
+    fn set_write(&self, event_loop: &mut EventLoop<Self>) {
+        event_loop.reregister(&self.shell,
+                              INPUT,
+                              EventSet::writable() | EventSet::readable(),
+                              PollOpt::level()).unwrap();
     }
 }
 
@@ -149,11 +169,11 @@ impl Handler for TermHandler {
         }
 
         if self.out_buf.is_empty() {
-            event_loop.reregister(&self.shell, INPUT, EventSet::readable(), PollOpt::level()).unwrap();
+            self.set_read(event_loop);
         } else {
             info!("queueing up more writes");
 
-            event_loop.reregister(&self.shell, INPUT, EventSet::writable() | EventSet::readable(), PollOpt::level()).unwrap();
+            self.set_write(event_loop);
         }
     }
 
@@ -183,8 +203,19 @@ impl Handler for TermHandler {
             Character(c) => {
                 write!(self.out_buf, "{}", c).unwrap();
 
-                // Turn on writing
-                event_loop.reregister(&self.shell, INPUT, EventSet::writable() | EventSet::readable(), PollOpt::level()).unwrap();
+                self.set_write(event_loop);
+            },
+            Focus(got_focus) => {
+                // Check mode for focus
+                if self.term.lock().unwrap().send_focus_events() {
+                    if got_focus {
+                        write!(self.out_buf, "\x1B[I").unwrap();
+                    } else {
+                        write!(self.out_buf, "\x1B[O").unwrap();
+                    }
+
+                    self.set_write(event_loop);
+                }
             }
         }
     }

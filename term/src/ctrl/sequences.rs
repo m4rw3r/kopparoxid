@@ -130,6 +130,12 @@ pub enum PrivateMode {
     ///
     /// Default: off
     LightScreen,
+    /// If set send focus events when terminal gains or loses focus.
+    ///
+    /// "\x1B[I" for focus in and "\x1B[O" for focus out.
+    ///
+    /// Default: off
+    SendFocusEvents,
 }
 
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

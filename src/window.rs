@@ -132,10 +132,9 @@ impl<C> Window<C>
                 Event::Closed               => process::exit(0),
                 // TODO: Proper keyboard handling
                 Event::ReceivedCharacter(c) => msg.send(Message::Character(c)).unwrap(),
+                Event::Focused(got_focus)   => msg.send(Message::Focus(got_focus)).unwrap(),
                 Event::MouseMoved(_)        => {},
                 Event::Awakened             => {
-                    // TODO: Limit number of frames per second, notifications from mio can queue up a
-                    // LOT of them
                     info!("Window: rendering");
 
                     let new_bufsize = self.display.get_framebuffer_dimensions();

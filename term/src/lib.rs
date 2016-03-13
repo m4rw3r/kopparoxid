@@ -71,6 +71,8 @@ bitflags!{
         /// If the cursor should be visible
         // TODO: Implement
         const SHOW_CURSOR = 0b00001000,
+        /// If we should send focus events
+        const SEND_FOCUS  = 0b00010000,
     }
 }
 
@@ -224,9 +226,6 @@ impl Term {
         use self::char_mode::*;
 
         use ctrl::Seq::*;
-        use ctrl::CharAttr::*;
-        use ctrl::CharType;
-        use ctrl::PrivateMode;
         use ctrl::EraseInLine as EIL;
         use ctrl::EraseInDisplay as EID;
 
@@ -238,20 +237,23 @@ impl Term {
             SetWindowTitle(title) => self.title = title,
             Unicode(c)        => self.put_char(c as usize),
             CharAttr(list)    => {
+                use ctrl::CharType::*;
+                use ctrl::CharAttr::*;
+
                 for a in list {
                     match a {
-                        Reset                       => self.style = Style::default(),
-                        FGColor(c)                  => self.style.fg = c,
-                        BGColor(c)                  => self.style.bg = c,
-                        Set(CharType::Bold)         => self.style.attrs.insert(BOLD),
-                        Set(CharType::Italicized)   => self.style.attrs.insert(ITALIC),
-                        Set(CharType::Inverse)      => self.style.attrs.insert(INVERSE),
-                        Set(CharType::Underlined)   => self.style.attrs.insert(UNDERLINED),
-                        Unset(CharType::Bold)       => self.style.attrs.remove(BOLD),
-                        Unset(CharType::Italicized) => self.style.attrs.remove(ITALIC),
-                        Unset(CharType::Inverse)    => self.style.attrs.remove(INVERSE),
-                        Unset(CharType::Underlined) => self.style.attrs.remove(UNDERLINED),
-                        _                           => {
+                        Reset             => self.style = Style::default(),
+                        FGColor(c)        => self.style.fg = c,
+                        BGColor(c)        => self.style.bg = c,
+                        Set(Bold)         => self.style.attrs.insert(BOLD),
+                        Set(Italicized)   => self.style.attrs.insert(ITALIC),
+                        Set(Inverse)      => self.style.attrs.insert(INVERSE),
+                        Set(Underlined)   => self.style.attrs.insert(UNDERLINED),
+                        Unset(Bold)       => self.style.attrs.remove(BOLD),
+                        Unset(Italicized) => self.style.attrs.remove(ITALIC),
+                        Unset(Inverse)    => self.style.attrs.remove(INVERSE),
+                        Unset(Underlined) => self.style.attrs.remove(UNDERLINED),
+                        _                 => {
                             println!("Unknown char attr: {:?}", a);
                         },
                     }
@@ -328,18 +330,26 @@ impl Term {
                 }
             },
             PrivateModeSet(modes) => {
+                use ctrl::PrivateMode::*;
+
                 for m in modes {
                     match m {
-                        PrivateMode::ShowCursor => self.mode.insert(SHOW_CURSOR),
-                        _                       => error!("Unknown private mode (set): {:?}", m),
+                        ShowCursor      => self.mode.insert(SHOW_CURSOR),
+                        CursorBlink     => self.mode.insert(BLINK),
+                        SendFocusEvents => self.mode.insert(SEND_FOCUS),
+                        _               => error!("Unknown private mode (set): {:?}", m),
                     }
                 }
             },
             PrivateModeReset(modes) => {
+                use ctrl::PrivateMode::*;
+
                 for m in modes {
                     match m {
-                        PrivateMode::ShowCursor => self.mode.remove(SHOW_CURSOR),
-                        _                       => error!("Unknown private mode (reset): {:?}", m),
+                        ShowCursor      => self.mode.remove(SHOW_CURSOR),
+                        CursorBlink     => self.mode.remove(BLINK),
+                        SendFocusEvents => self.mode.remove(SEND_FOCUS),
+                        _               => error!("Unknown private mode (reset): {:?}", m),
                     }
                 }
             },
@@ -349,13 +359,25 @@ impl Term {
         }
 
         Ok(())
-
-        // TODO: Propagate focus information
-        // \x1B[I for focus in and \x1B[O for focus out
     }
 
     #[inline]
     pub fn get_title(&self) -> &str {
         &self.title
+    }
+
+    #[inline]
+    pub fn send_focus_events(&self) -> bool {
+        self.mode.contains(SEND_FOCUS)
+    }
+
+    /// Cursor position in (column, row)
+    #[inline]
+    pub fn get_cursor(&self) -> Option<(usize, usize)> {
+        if self.mode.contains(SHOW_CURSOR) {
+            Some((self.cursor.col(), self.cursor.row()))
+        } else {
+            None
+        }
     }
 }
