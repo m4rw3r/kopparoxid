@@ -6,15 +6,14 @@ authors = ["Martin Wernstål <m4rw3r@gmail.com>"]
 [dependencies]
 bitflags    = "*"
 chomp       = "*"
-errno       = "*"
 freetype-rs = "*"
 glium       = "*"
 glutin      = "*"
-libc        = { git = "https://github.com/rust-lang/libc.git" }
 log         = "*"
 num         = "*"
 mio         = "*"
 time        = "*"
 env_logger  = "*"
 
-kopparoxid-term = { path = "./term" }
+kopparoxid-term   = { path = "./term" }
+kopparoxid-system = { path = "./system" }

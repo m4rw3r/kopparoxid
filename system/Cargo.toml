@@ -1,0 +1,8 @@
+[package]
+name        = "kopparoxid-system"
+version     = "0.0.1"
+
+[dependencies]
+libc  = { git = "https://github.com/rust-lang/libc.git" }
+errno = "*"
+mio   = "0.5"

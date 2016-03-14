@@ -1,26 +1,23 @@
 //! Event loop management for child-process.
 
 use std::sync::{Arc, Mutex};
-use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::io::{self, Write};
 use std::thread;
 use std::ptr;
-
-use libc;
 
 use chomp::buffer::{FixedSizeBuffer, Source, Stream, StreamError};
 use chomp::buffer::data_source::ReadDataSource;
 
 use mio::{EventLoop, EventLoopConfig, EventSet, Handler, PollOpt, Sender, Token, Timeout};
-use mio::unix::UnixStream;
+use mio::unix::PipeReader;
 
 use glutin::WindowProxy;
 
 use term::{ctrl, Term};
-
-use pty;
+use system::{kill, ProcessId, Pty, Signal};
 
 const INPUT: Token = Token(0);
+const EXIT:  Token = Token(1);
 
 #[derive(Clone, Copy, Debug)]
 pub enum Message {
@@ -35,6 +32,8 @@ pub enum Message {
         /// Window height in pixels
         y:      u32,
     },
+    /// Exit event loop
+    Exit,
     /// Received character
     Character(char),
     /// Terminal received/lost focus
@@ -42,11 +41,15 @@ pub enum Message {
 }
 
 struct TermHandler {
-    shell:       UnixStream,
+    shell:       Pty,
     /// Process id (and process group id) of the stream found in `shell`
-    child_pid:   libc::c_int,
+    child_pid:   ProcessId,
+    /// Pipe for self-pipe sending control data
+    ///
+    /// Never read from, but here to keep it alive until the TermHandler is destroyed.
+    _exit_pipe:  Option<PipeReader>,
     /// Parser buffer over `shell`
-    buf:         Source<ReadDataSource<pty::Fd>, FixedSizeBuffer<u8>>,
+    buf:         Source<ReadDataSource<Pty>, FixedSizeBuffer<u8>>,
     /// Terminal data
     term:        Arc<Mutex<Term>>,
     win:         WindowProxy,
@@ -145,9 +148,15 @@ impl Handler for TermHandler {
     type Timeout = ();
     type Message = Message;
 
-    fn ready(&mut self, event_loop: &mut EventLoop<Self>, _token: Token, events: EventSet) {
+    fn ready(&mut self, event_loop: &mut EventLoop<Self>, token: Token, events: EventSet) {
+        if token == EXIT {
+            event_loop.shutdown();
+
+            return;
+        }
+
         if events.is_readable() {
-            // TODO: Check fill rate
+            // TODO: Check fill rate, seems like pty buffer size is just 1K for some reason
             self.buf.fill().unwrap();
 
             let dirty = self.parse();
@@ -192,13 +201,9 @@ impl Handler for TermHandler {
             Resize{ width, height, x, y } => {
                 self.term.lock().expect("term::Term mutex poisoned").resize((width as usize, height as usize));
 
-                pty::set_window_size(self.shell.as_raw_fd(), (width, height), (x, y)).unwrap();
+                self.shell.set_window_size((width, height), (x, y)).unwrap();
 
-                // Message all processes in the child process group
-                match unsafe { libc::kill(-self.child_pid, libc::SIGWINCH) } {
-                    -1 => panic!("kill(child, SIGWINCH) failed: {:?}", io::Error::last_os_error()),
-                    _  => {},
-                }
+                kill(self.child_pid.process_group(), Signal::SigWinch).unwrap();
             },
             Character(c) => {
                 write!(self.out_buf, "{}", c).unwrap();
@@ -216,12 +221,16 @@ impl Handler for TermHandler {
 
                     self.set_write(event_loop);
                 }
-            }
+            },
+            Exit => {
+                event_loop.shutdown();
+            },
         }
     }
 }
 
-pub fn run(mut m: pty::Fd, child_pid: libc::c_int, w: WindowProxy) -> (Arc<Mutex<Term>>, Sender<Message>) {
+// TODO: Make builder
+pub fn run(mut m: Pty, child_pid: ProcessId, ctrl: Option<PipeReader>, w: WindowProxy) -> (Arc<Mutex<Term>>, Sender<Message>) {
     let mut ev_cfg  = EventLoopConfig::new();
 
     // We do not want to block the event loop
@@ -231,15 +240,21 @@ pub fn run(mut m: pty::Fd, child_pid: libc::c_int, w: WindowProxy) -> (Arc<Mutex
 
     let mut ev_loop = EventLoop::configured(ev_cfg).unwrap();
     let t           = Arc::new(Mutex::new(Term::new_with_size(80, 24)));
-    let shell       = unsafe { UnixStream::from_raw_fd(m.as_raw_fd()) };
-    let mut buf     = Source::from_read(m, FixedSizeBuffer::new());
+    let mut buf     = Source::from_read(m.clone(), FixedSizeBuffer::new());
 
     buf.set_autofill(false);
-    ev_loop.register(&shell, INPUT, EventSet::readable(), PollOpt::level()).unwrap();
+    ev_loop.register(&m, INPUT, EventSet::readable(), PollOpt::level()).unwrap();
+
+    if let Some(c) = ctrl.as_ref() {
+        info!("Registering EXIT pipe");
+
+        ev_loop.register(c, EXIT, EventSet::readable(), PollOpt::level() | PollOpt::oneshot()).unwrap();
+    }
 
     let mut handler = TermHandler {
-        shell:       shell,
+        shell:       m,
         child_pid:   child_pid,
+        _exit_pipe:  ctrl,
         term:        t.clone(),
         buf:         buf,
         win:         w,
@@ -253,6 +268,10 @@ pub fn run(mut m: pty::Fd, child_pid: libc::c_int, w: WindowProxy) -> (Arc<Mutex
         info!("Starting terminal event loop");
 
         ev_loop.run(&mut handler).unwrap();
+
+        info!("Event loop thread exiting");
+
+        // TODO: Action here to notify window thread that event loop thread has stopped
     });
 
     (t, msg)

@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::sync::mpsc::Receiver;
 
 use event_loop::Message;
 use gl::glyph::{self, FreeType, FreeTypeConfig, Map, MapError, Renderer};
@@ -7,7 +8,7 @@ use gl::glyph::Error as GlyphError;
 use gl::term::{GlTerm, FontStyle};
 use glium::{Display, DisplayBuild};
 use glium::backend::Facade;
-use glutin::{Event, GlRequest, WindowBuilder, WindowProxy};
+use glutin::{Event, GlRequest, WindowBuilder};
 use glutin::Api::OpenGl;
 use term::color::Manager;
 use time::{Duration, PreciseTime};
@@ -96,6 +97,7 @@ pub struct Window<C>
   where C: Manager {
     /// Glium window and OpenGl context
     display: Display,
+    msgs:    Receiver<Action>,
     /// Terminal renderer
     gl:      GlTerm<C>,
 }
@@ -103,7 +105,7 @@ pub struct Window<C>
 impl<C> Window<C>
   where C: Manager {
     // TODO: Result
-    pub fn new(faces: FontFaces, colors: C) -> Self {
+    pub fn new(faces: FontFaces, colors: C, msgs: Receiver<Action>) -> Self {
         info!("creating window");
 
         let display = WindowBuilder::new()
@@ -121,6 +123,7 @@ impl<C> Window<C>
 
         Window {
             display: display,
+            msgs:    msgs,
             gl:      GlTerm::new(ctx, colors, f_map).unwrap(),
         }
     }
@@ -131,6 +134,9 @@ impl<C> Window<C>
     }
 
     pub fn run(&mut self, terminal: Arc<Mutex<Term>>, msg: Sender<Message>) {
+        unsafe { self.display.get_window().unwrap().make_current().unwrap() };
+        self.display.get_window().unwrap().show();
+
         let cell        = self.gl.cell_size();
         let mut bufsize = self.display.get_framebuffer_dimensions();
 
@@ -147,12 +153,27 @@ impl<C> Window<C>
 
         for i in self.display.wait_events() {
             match i {
-                Event::Closed               => break,
+                Event::Closed               => {
+                    msg.send(Message::Exit).unwrap();
+
+                    break;
+                },
                 // TODO: Proper keyboard handling
                 Event::ReceivedCharacter(c) => msg.send(Message::Character(c)).unwrap(),
                 Event::Focused(got_focus)   => msg.send(Message::Focus(got_focus)).unwrap(),
                 Event::MouseMoved(_)        => {},
                 Event::Awakened             => {
+                    // We ignore errors (senders disconnected, channel empty)
+                    match self.msgs.try_recv().ok() {
+                        Some(Action::Quit) => {
+                            info!("Received Action::Quit, exiting window thread");
+
+                            break;
+                        },
+                        // No event, continue with render nothing
+                        None => {},
+                    }
+
                     info!("Window: rendering");
 
                     let new_bufsize = self.display.get_framebuffer_dimensions();
@@ -194,6 +215,8 @@ impl<C> Window<C>
                 _ => {}, // println!("w {:?}", i)
             }
         }
+
+        info!("window loop exiting");
     }
 }
 
