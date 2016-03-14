@@ -77,6 +77,8 @@ pub enum Seq {
     DeleteCharacter(usize),
     /// Delete n lines, default = 1.
     DeleteLines(usize),
+    /// Insert n lines, default = 1.
+    InsertLines(usize),
     /// Sets the scrolling region (top, bottom), defaults to whole window.
     ScrollingRegion(usize, usize),
     SendPrimaryDeviceAttributes,

@@ -236,6 +236,7 @@ fn parse_csi(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
                 Ok(Some(2)) => Seq::EraseInLine(EraseInLine::All),
                 _           => Seq::EraseInLine(EraseInLine::Right),
             }),
+            b'L' => m.from_result(parse_int(buf).map(|n| Seq::InsertLines(cmp::max(1, n.unwrap_or(1))))),
             b'M' => m.from_result(parse_int(buf).map(|n| Seq::DeleteLines(cmp::max(1, n.unwrap_or(1))))),
             b'P' => m.from_result(parse_int(buf).map(|n| Seq::DeleteCharacter(n.unwrap_or(1)))),
             b'Z' => m.from_result(parse_int(buf).map(|n| Seq::CursorBackwardsTabulation(n.unwrap_or(1)))),
