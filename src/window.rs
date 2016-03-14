@@ -1,8 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use event_loop::Message;
-use gl::glyph::{self, FreeType, FreeTypeConfig, Map, Renderer};
+use gl::glyph::{self, FreeType, FreeTypeConfig, Map, MapError, Renderer};
 use gl::glyph::Error as GlyphError;
 use gl::term::{GlTerm, FontStyle};
 use glium::{Display, DisplayBuild};
@@ -11,9 +11,30 @@ use glutin::{Event, GlRequest, WindowBuilder, WindowProxy};
 use glutin::Api::OpenGl;
 use term::color::Manager;
 use time::{Duration, PreciseTime};
-use ft::{self, FtResult};
+use ft;
+use ft::Error as FtError;
 use term::Term;
 use mio::Sender;
+
+pub use glutin::WindowProxy;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Action {
+    Quit,
+}
+
+#[derive(Clone, Debug)]
+pub enum Error {
+    FreeTypeError(PathBuf, FtError),
+    FontError(PathBuf, GlyphError),
+    MapError(MapError<FontStyle>),
+}
+
+impl From<MapError<FontStyle>> for Error {
+    fn from(e: MapError<FontStyle>) -> Self {
+        Error::MapError(e)
+    }
+}
 
 #[derive(Debug)]
 pub struct Font<'a> {
@@ -40,17 +61,17 @@ pub struct FontFaces<'a> {
     pub bold_italic: Option<Font<'a>>,
 }
 
-fn load_font<'a, 'b>(f: &'a mut ft::Library, font: Font<'b>, scale: f32) -> FtResult<Box<Renderer<u8> + 'static>> {
-    let ft_face = try!(f.new_face(font.path, 0));
+fn load_font<'a, 'b>(f: &'a mut ft::Library, font: Font<'b>, scale: f32) -> Result<Box<Renderer<u8> + 'static>, Error> {
+    let ft_face = try!(f.new_face(font.path, 0).map_err(|e| Error::FreeTypeError(font.path.to_owned(), e)));
 
-    try!(ft_face.set_pixel_sizes(0, (font.size as f32 * scale) as u32));
+    try!(ft_face.set_pixel_sizes(0, (font.size as f32 * scale) as u32).map_err(|e| Error::FreeTypeError(font.path.to_owned(), e)));
 
-    // TODO: Antialiasing and hinting settings
-    Ok(Box::new(FreeType::new(ft_face, font.config)))
+    Ok(Box::new(try!(FreeType::new(ft_face, font.config)
+                     .map_err(|e| Error::FontError(font.path.to_owned(), e)))))
 }
 
 impl<'a> FontFaces<'a> {
-    pub fn load_fonts<'b, 'c>(self, f: &'c mut ft::Library, m: &'b mut Map<FontStyle>, scale: f32) -> Result<(), GlyphError> {
+    pub fn load_fonts<'b, 'c>(self, f: &'c mut ft::Library, m: &'b mut Map<FontStyle>, scale: f32) -> Result<(), Error> {
         use gl::term::FontStyle::*;
 
         try!(m.add_renderer(Regular, try!(load_font(f, self.regular, scale))));

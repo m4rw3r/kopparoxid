@@ -34,12 +34,10 @@ fn monochrome_to_grayscale(bitmap: &ft::bitmap::Bitmap) -> Vec<u8> {
     bytes
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Error {
     FtError(ft::Error),
     MissingMetrics(usize),
-    UnknownRenderer,
-    DuplicateRendererKey,
 }
 
 impl From<ft::Error> for Error {
@@ -53,8 +51,6 @@ impl fmt::Display for Error {
         match *self {
             Error::FtError(err) => err.fmt(f),
             Error::MissingMetrics(glyph) => write!(f, "glyph {} is missing metrics", glyph),
-            Error::UnknownRenderer => write!(f, "unkown render key"),
-            Error::DuplicateRendererKey => write!(f, "key already exists"),
         }
     }
 }
@@ -137,17 +133,16 @@ fn ft_to_pixels(fixed_float: i64) -> i32 {
 }
 
 impl<'a> FreeType<'a> {
-    pub fn new(ft_face: ft::Face<'a>, mode: FreeTypeConfig) -> Self {
-        // FIXME: Use try!
-        let ft_metrics = ft_face.size_metrics().expect("Could not load size metrics from font face");
+    pub fn new(ft_face: ft::Face<'a>, mode: FreeTypeConfig) -> Result<Self, Error> {
+        let ft_metrics = try!(ft_face.size_metrics().ok_or(Error::MissingMetrics(0)));
         let width      = (ft_to_pixels(ft_metrics.max_advance) + 1) as u32;
         let height     = (ft_to_pixels(ft_metrics.height) + 1) as u32;
 
-        FreeType{
+        Ok(FreeType{
             ft_face:     ft_face,
             render_mode: mode,
             glyphsize:   (width, height),
-        }
+        })
     }
 }
 
@@ -205,6 +200,13 @@ impl<'a> Renderer<u8> for FreeType<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum MapError<K> {
+    DuplicateKey(K),
+    UnknownRenderer(K),
+    RenderError(Error),
+}
+
 pub struct Map<K>
   where K: Clone + Ord {
     renderers: collections::BTreeMap<K, Box<Renderer<u8> + 'static>>,
@@ -228,9 +230,9 @@ impl<K> Map<K>
         }
     }
 
-    pub fn add_renderer(&mut self, render_key: K, renderer: Box<Renderer<u8> + 'static>) -> Result<(), Error> {
+    pub fn add_renderer(&mut self, render_key: K, renderer: Box<Renderer<u8> + 'static>) -> Result<(), MapError<K>> {
         if self.renderers.contains_key(&render_key) {
-            return Err(Error::DuplicateRendererKey);
+            return Err(MapError::DuplicateKey(render_key));
         }
 
         self.renderers.insert(render_key, renderer);
@@ -238,7 +240,7 @@ impl<K> Map<K>
         Ok(())
     }
 
-    pub fn load(&mut self, render_key: K, glyph: usize) -> Result<(), Error> {
+    pub fn load(&mut self, render_key: K, glyph: usize) -> Result<(), MapError<K>> {
         let glyphs = &mut self.glyphs;
         let atlas  = &mut self.atlas;
 
@@ -247,7 +249,7 @@ impl<K> Map<K>
         }
 
         self.renderers.get_mut(&render_key)
-            .ok_or(Error::UnknownRenderer)
+            .ok_or_else(|| MapError::UnknownRenderer(render_key.clone()))
             .and_then(|mut r|
             r.render(glyph, &mut move |texture, padding| {
                 let r = atlas.add(texture);
@@ -255,7 +257,7 @@ impl<K> Map<K>
                 glyphs.insert((render_key.clone(), glyph), GlyphData { padding: padding, tex_rect: r });
 
                 Ok(())
-            })
+            }).map_err(MapError::RenderError)
         )
     }
 
