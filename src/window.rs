@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process;
 use std::sync::{Arc, Mutex};
 
 use event_loop::Message;
@@ -111,8 +110,6 @@ impl<C> Window<C>
     }
 
     pub fn run(&mut self, terminal: Arc<Mutex<Term>>, msg: Sender<Message>) {
-        unsafe { self.display.get_window().map(|w| w.make_current()); };
-
         let cell        = self.gl.cell_size();
         let mut bufsize = self.display.get_framebuffer_dimensions();
 
@@ -129,7 +126,7 @@ impl<C> Window<C>
 
         for i in self.display.wait_events() {
             match i {
-                Event::Closed               => process::exit(0),
+                Event::Closed               => break,
                 // TODO: Proper keyboard handling
                 Event::ReceivedCharacter(c) => msg.send(Message::Character(c)).unwrap(),
                 Event::Focused(got_focus)   => msg.send(Message::Focus(got_focus)).unwrap(),
