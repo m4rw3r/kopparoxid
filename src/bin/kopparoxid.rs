@@ -1,31 +1,32 @@
 #[macro_use]
-extern crate bitflags;
-extern crate chomp;
-extern crate env_logger;
-extern crate errno;
-extern crate freetype as ft;
-#[macro_use]
-extern crate glium;
-extern crate glutin;
-extern crate libc;
-#[macro_use]
 extern crate log;
-extern crate mio;
-extern crate time;
-
+extern crate libc;
+extern crate env_logger;
+extern crate kopparoxid;
 extern crate kopparoxid_term as term;
 
-mod pty;
-mod gl;
-mod event_loop;
-mod window;
-
-use gl::glyph::{FreeTypeConfig, HintMode};
-use window::{Font, FontFaces, Window};
+use kopparoxid::gl::glyph::{FreeTypeConfig, HintMode};
+use kopparoxid::window::{Font, FontFaces, Window};
+use kopparoxid::{pty, event_loop};
+use term::color;
 
 use std::io;
 
-use term::color;
+/// Helper struct which will automatically send a SIGHUP to the wrapped pid on Drop.
+struct DropHup {
+    pid: libc::c_int,
+}
+
+impl Drop for DropHup {
+    fn drop(&mut self) {
+        unsafe {
+            // ignore error
+            libc::kill(self.pid, libc::SIGHUP);
+
+            info!("sent SIGHUP");
+        }
+    }
+}
 
 fn main() {
     let (m, s) = pty::open().expect("Failed to open pty");
@@ -37,6 +38,9 @@ fn main() {
         -1  => panic!(io::Error::last_os_error()),
         0   => pty::run_sh(m, s),
         pid => {
+            // Make sure we send SIGHUP whenever we exit
+            let _child_hup = DropHup { pid: pid };
+
             env_logger::init().expect("Failed to create env_logger");
 
             info!("master, child pid: {}", pid);
