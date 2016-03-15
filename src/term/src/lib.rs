@@ -281,6 +281,9 @@ impl Term {
                     self.move_cursor(Unbounded(Down(1)));
                 }
             },
+            // ScrollingRegion is 1-indexed and inclusive.
+            ScrollingRegion(top, bot)   => self.grid.set_scroll_region(top.unwrap_or(0).saturating_sub(1), bot),
+            InsertLines(n)              => self.grid.insert_lines(&self.cursor, n),
             SendPrimaryDeviceAttributes => {
                 // CSI ? Pm c
                 // where Pm = int separated by ;

@@ -22,9 +22,9 @@ impl Default for CursorState {
 
 #[derive(Copy, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Cursor {
-    row:   usize,
-    col:   usize,
-    state: CursorState,
+    row:    usize,
+    col:    usize,
+    state:  CursorState,
 }
 
 impl Cursor {
@@ -39,10 +39,19 @@ impl Cursor {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ScrollRegion {
+    // Default value is 0 anyway, no need for option, 0 = first line inclusive
+    top: usize,
+    // Bottom line, exclusive. Option = use to end.
+    bot: Option<usize>,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Grid<T: Copy + Default> {
     width:  usize,
     height: usize,
+    screg:  ScrollRegion,
     /// Data stored in lines, columns
     data:   Vec<Vec<T>>,
 }
@@ -57,6 +66,7 @@ impl<T: Copy + Default> Grid<T> {
         Grid {
             width:  width,
             height: height,
+            screg:  ScrollRegion { top: 0, bot: None },
             data:   data,
         }
     }
@@ -71,6 +81,8 @@ impl<T: Copy + Default> Grid<T> {
 
             row.extend((cols..width).map(|_| <T>::default()));
         }
+
+        // TODO: Reset scrolling region?
 
         let len = self.data.len();
 
@@ -88,33 +100,47 @@ impl<T: Copy + Default> Grid<T> {
         (self.width, self.height)
     }
 
-    /// Scrolls the grid `rows` downwards, clearing all new lines.
-    pub fn scroll(&mut self, rows: isize) {
-        if rows > 0 {
-            // Saturate so we do nothing if we scroll more
-            for i in 0..(self.height.saturating_sub(rows as usize)) {
-                self.data.swap(i, i + rows as usize);
-            }
+    // Non-inclusive bottom margin
+    fn screg_bot(&self) -> usize {
+        if let Some(n) = self.screg.bot {
+            n
+        } else {
+            self.data.len()
+        }
+    }
 
-            // Saturate to clear whole screen if more is scrolled
-            for row in self.data[self.height.saturating_sub(rows as usize)..].iter_mut() {
-                for c in row.iter_mut() {
-                    *c = Default::default();
-                }
+    /// Scrolls the grid down `rows` keeping lines < `start`, adding empty lines at the bottom.
+    fn scroll_down(&mut self, start: usize, rows: usize) {
+        // Saturate so we do nothing if we scroll more
+        let len   = self.screg_bot();
+        let end   = len.saturating_sub(rows);
+        let start = cmp::min(start, end);
+
+        for i in start..end {
+            self.data.swap(i, i + rows);
+        }
+
+        // Saturate to clear whole screen if more is scrolled
+        for row in self.data[end..len].iter_mut() {
+            for c in row.iter_mut() {
+                *c = Default::default();
             }
         }
-        else if rows < 0 {
-            let last_row = self.data.len() - 1;
-            let keep     = cmp::min(-rows as usize, last_row);
+    }
 
-            for i in (keep..last_row).rev() {
-                self.data.swap(i - keep, i);
-            }
+    /// Scrlls the grid up `rows` keeping lines < `start`, adding empty lines at the top.
+    fn scroll_up(&mut self, start: usize, rows: usize) {
+        let start = start + rows;
+        let end   = self.screg_bot().saturating_sub(1);
+        let keep  = cmp::min(start, end);
 
-            for row in self.data[..keep].iter_mut() {
-                for c in row.iter_mut() {
-                    *c = Default::default();
-                }
+        for i in (keep..end).rev() {
+            self.data.swap(i - keep, i);
+        }
+
+        for row in self.data[start..keep].iter_mut() {
+            for c in row.iter_mut() {
+                *c = Default::default();
             }
         }
     }
@@ -124,7 +150,9 @@ impl<T: Copy + Default> Grid<T> {
         if cursor.state.contains(AUTOWRAP | WRAP_NEXT) && cursor.col + 1 >= self.width {
             // Move cursor row down one and scroll if needed
             if cursor.row + 1 >= self.height {
-                self.scroll(1);
+                let start = self.screg.top;
+
+                self.scroll_down(start, 1);
             } else {
                 cursor.row += 1;
             }
@@ -143,6 +171,17 @@ impl<T: Copy + Default> Grid<T> {
             cursor.col += 1;
 
             cursor.state.remove(WRAP_NEXT);
+        }
+    }
+
+    pub fn set_scroll_region(&mut self, top: usize, bot: Option<usize>) {
+        self.screg = ScrollRegion { top: top, bot: bot }
+    }
+
+    pub fn insert_lines(&mut self, cursor: &Cursor, n: usize) {
+        if cursor.row >= self.screg.top && cursor.row < self.screg_bot() {
+            // Only scroll if the cursor is inside of the area
+            self.scroll_up(cursor.row, n);
         }
     }
 
@@ -300,16 +339,18 @@ impl Movement for Unbounded {
     fn move_cursor<T: Copy + Default>(&self, g: &mut Grid<T>, c: &mut Cursor) {
         use self::Line::*;
 
+        let top = g.screg.top;
+
         match self.0 {
             Up(n)    => {
-                g.scroll(cmp::min(0, c.row as isize - n as isize));
+                g.scroll_up(top, -cmp::min(0, c.row as isize - n as isize) as usize);
 
                 c.row = c.row.saturating_sub(n);
             },
             Down(n)  => {
                 let last_row = (g.height - 1) as isize;
 
-                g.scroll(cmp::max(0, n as isize + c.row as isize - last_row));
+                g.scroll_down(top, cmp::max(0, n as isize + c.row as isize - last_row) as usize);
 
                 c.row = cmp::min(c.row + n, g.height - 1);
             },

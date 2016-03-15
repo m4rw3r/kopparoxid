@@ -41,7 +41,9 @@ pub enum Seq {
     PrivateModeSet(Vec<PrivateMode>),
     PrivateModeReset(Vec<PrivateMode>),
     CharAttr(Vec<CharAttr>),
+    /// Erase from the current cell inclusive.
     EraseInLine(EraseInLine),
+    /// Erase from the current cell inclusive.
     EraseInDisplay(EraseInDisplay),
     /// Move the cursor n tabs backward (CBT).
     CursorBackwardsTabulation(usize),
@@ -75,12 +77,15 @@ pub enum Seq {
     /// Characters not deleted should move to the left to fill the positions of the deleted
     /// characters, keeping their original character attributes.
     DeleteCharacter(usize),
-    /// Delete n lines, default = 1.
+    /// Delete n lines at the bottom of the terminal, scrolling down, default = 1.
     DeleteLines(usize),
-    /// Insert n lines, default = 1.
+    /// Insert n lines at the line below the cursor, default = 1.
     InsertLines(usize),
-    /// Sets the scrolling region (top, bottom), defaults to whole window.
-    ScrollingRegion(usize, usize),
+    /// Sets the scrolling region (top, bottom), defaults to whole window (DECSTBM).
+    ///
+    /// First parameter is line-number of the first line, second parameter is the line-number of
+    /// the last line. If no value is provided, default to top and bottom respectively.
+    ScrollingRegion(Option<usize>, Option<usize>),
     SendPrimaryDeviceAttributes,
     SendSecondaryDeviceAttributes,
     /* OSC */
@@ -138,6 +143,22 @@ pub enum PrivateMode {
     ///
     /// Default: off
     SendFocusEvents,
+    /// X11 xterm mouse protocol tracking.
+    ///
+    /// Default: off
+    MouseTrackingX11,
+    /// Cell motion mouse tracking.
+    ///
+    /// Defualt: off
+    MouseTrackingCell,
+    /// UTF-8 Mouse mode
+    ///
+    /// Default: off
+    MouseModeUtf8,
+    /// SGR Mouse mode
+    ///
+    /// Default: off
+    MouseModeSGR,
 }
 
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

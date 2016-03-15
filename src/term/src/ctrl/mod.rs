@@ -104,6 +104,12 @@ impl From<chomp::Error<u8>> for Error {
     }
 }
 
+// TODO: Upstream to Chomp and remove Copy
+fn maybe<I: Copy, T, E, F>(i: Input<I>, f: F) -> ParseResult<I, Option<T>, E>
+  where F: FnOnce(Input<I>) -> ParseResult<I, T, E> {
+    option(i, |i| f(i).map(Some), None)
+}
+
 /// Attempts to parse characters or escape sequences from the given buffer.
 pub fn parser(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
     any(m).bind(|m, c| match c {
@@ -207,8 +213,8 @@ fn parse_csi(m: Input<u8>) -> ParseResult<u8, Seq, Error> {
                 _           => m.err(Error::UnknownCSI(b'n', From::from(buf))),
             },
             b'r' => m.from_result(parse_only(parser!{
-                    let top = option(decimal, 0);
-                    let bot = option(parser!{token(b';'); decimal()}, 0);
+                    let top = maybe(decimal);
+                    let bot = maybe(parser!{token(b';'); decimal()});
 
                     ret @ _, Error: Seq::ScrollingRegion(top, bot)
                 }, buf).map_err(|_| Error::UnknownCSI(b'r', buf.to_owned()))),
@@ -337,6 +343,10 @@ fn parse_private_mode(buffer: &[u8]) -> Result<Vec<PrivateMode>, Error> {
             12   => i.ret(CursorBlink),
             25   => i.ret(ShowCursor),
             47   => i.ret(AlternateScreenBuffer),
+            1000 => i.ret(MouseTrackingX11),
+            1002 => i.ret(MouseTrackingCell),
+            1005 => i.ret(MouseModeUtf8),
+            1006 => i.ret(MouseModeSGR),
             1004 => i.ret(SendFocusEvents),
             1047 => i.ret(AlternateScreenBuffer),
             1048 => i.ret(SaveCursor),
