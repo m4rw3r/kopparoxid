@@ -2,6 +2,11 @@
 name = "kopparoxid"
 version = "0.0.1"
 authors = ["Martin Wernstål <m4rw3r@gmail.com>"]
+publish = false
+
+[[bin]]
+name = "cu2o"
+path = "src/bin/cu2o.rs"
 
 [dependencies]
 log         = "*"
