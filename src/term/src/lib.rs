@@ -9,7 +9,6 @@ use std::io;
 use std::io::Write;
 
 pub mod ctrl;
-pub mod color;
 
 mod grid;
 

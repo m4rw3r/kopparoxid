@@ -6,7 +6,7 @@ use glium;
 use glyph;
 
 use cu2o_term::{Cell, CharMode, Display, Term};
-use cu2o_term::color::Manager;
+use color::Manager;
 
 #[derive(Copy, Clone, Debug)]
 struct ColoredVertex {

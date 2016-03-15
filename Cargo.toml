@@ -13,7 +13,6 @@ log         = "*"
 env_logger  = "*"
 mio         = "*"
 
-cu2o_term   = { path = "src/term" }
 cu2o_system = { path = "src/system" }
 cu2o_window = { path = "src/window" }
 cu2o_gl     = { path = "src/gl" }

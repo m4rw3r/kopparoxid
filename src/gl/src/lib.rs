@@ -10,6 +10,7 @@ extern crate log;
 extern crate cu2o_term;
 
 mod term;
+pub mod color;
 pub mod glyph;
 
 pub use term::{FontStyle, GlTerm};

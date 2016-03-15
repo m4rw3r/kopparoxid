@@ -2,7 +2,6 @@
 extern crate log;
 extern crate env_logger;
 extern crate mio;
-extern crate cu2o_term;
 extern crate cu2o_loop;
 extern crate cu2o_window;
 extern crate cu2o_gl;
@@ -19,7 +18,7 @@ use cu2o_gl::glyph::{FreeTypeConfig, HintMode};
 use cu2o_loop::Message;
 use cu2o_system::{AtomicPtr, Pty, SignalHandler, ProcessId, Signal};
 use cu2o_system::{create_session, create_process_group, execvp, fork, kill, signal};
-use cu2o_term::color;
+use cu2o_gl::color;
 use cu2o_window::{Action, Font, FontFaces, Window, WindowProxy};
 use mio::unix::{pipe, PipeWriter};
 

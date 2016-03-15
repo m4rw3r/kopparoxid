@@ -1,21 +1,20 @@
-// TODO: Move this to gl
-use ctrl;
+use cu2o_term::ctrl::Color;
 
 /// Translates a color code into RGB float values in the range [0, 1] suitable for rendering.
 pub trait Manager {
     /// Translates the given color in the context of a foreground color.
-    fn fg(&self, color: ctrl::Color) -> [f32; 3];
+    fn fg(&self, color: Color) -> [f32; 3];
     /// Translates the given color in the context of a background color.
-    fn bg(&self, color: ctrl::Color) -> [f32; 3];
+    fn bg(&self, color: Color) -> [f32; 3];
     /// Gives the fill-color for filling the background.
     fn fill(&self) -> [f32; 3];
 }
 
 /// Maps the color sequences onto the correct palette indexes. These are passed to ``f`` to
 /// be converted into a RGB float-value suitable for rendering.
-fn to_color<F>(c: ctrl::Color, default: [f32; 3], f: F) -> [f32; 3]
+fn to_color<F>(c: Color, default: [f32; 3], f: F) -> [f32; 3]
   where F: Sized + Fn(u8) -> [f32; 3] {
-    use ctrl::Color::*;
+    use cu2o_term::ctrl::Color::*;
 
     match c {
         Black        => f(0),
@@ -107,13 +106,13 @@ pub struct XtermDefault;
 
 impl Manager for XtermDefault {
     #[inline]
-    fn fg(&self, color: ctrl::Color) -> [f32; 3] {
+    fn fg(&self, color: Color) -> [f32; 3] {
         to_color(color, rgb2float(0xc5c8c6), xterm_palette)
         //to_color(color, [0.0, 0.0, 0.0], xterm_palette)
     }
 
     #[inline]
-    fn bg(&self, color: ctrl::Color) -> [f32; 3] {
+    fn bg(&self, color: Color) -> [f32; 3] {
         to_color(color, rgb2float(0x1d1f21), xterm_palette)
         //to_color(color, [1.0, 1.0, 1.0], xterm_palette)
     }
