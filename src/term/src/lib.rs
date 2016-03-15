@@ -6,7 +6,6 @@ extern crate chomp;
 extern crate log;
 
 use std::io;
-
 use std::io::Write;
 
 pub mod ctrl;

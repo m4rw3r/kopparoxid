@@ -4,14 +4,16 @@ use std::collections;
 use std::fmt;
 use std::marker::PhantomData;
 
-use ft;
+use freetype::Error as FtError;
+use freetype::{face, Face};
+use freetype::bitmap::Bitmap;
 use glium::{Texture2d, Rect};
 use glium::backend::Context;
 use glium::texture::{ClientFormat, MipmapsOption, PixelValue, RawImage2d, UncompressedFloatFormat};
 
 /// Converts a monochrome bitmap where every bit represents a filled or empty pixel
 /// to a grayscale bitmap where every byte represents a pixel.
-fn monochrome_to_grayscale(bitmap: &ft::bitmap::Bitmap) -> Vec<u8> {
+fn monochrome_to_grayscale(bitmap: &Bitmap) -> Vec<u8> {
     let grayscale_size = (bitmap.rows() * bitmap.width()) as usize;
 
     assert_eq!(bitmap.buffer().len(), (bitmap.rows() * bitmap.pitch().abs()) as usize);
@@ -36,12 +38,12 @@ fn monochrome_to_grayscale(bitmap: &ft::bitmap::Bitmap) -> Vec<u8> {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Error {
-    FtError(ft::Error),
+    FtError(FtError),
     MissingMetrics(usize),
 }
 
-impl From<ft::Error> for Error {
-    fn from(err: ft::Error) -> Error {
+impl From<FtError> for Error {
+    fn from(err: FtError) -> Error {
         Error::FtError(err)
     }
 }
@@ -116,7 +118,7 @@ pub struct FreeTypeConfig {
 
 /// A renderer using the FreeType library to render glyphs.
 pub struct FreeType<'a> {
-    ft_face:     ft::Face<'a>,
+    ft_face:     Face<'a>,
     render_mode: FreeTypeConfig,
     glyphsize:   (u32, u32)
 }
@@ -133,7 +135,7 @@ fn ft_to_pixels(fixed_float: i64) -> i32 {
 }
 
 impl<'a> FreeType<'a> {
-    pub fn new(ft_face: ft::Face<'a>, mode: FreeTypeConfig) -> Result<Self, Error> {
+    pub fn new(ft_face: Face<'a>, mode: FreeTypeConfig) -> Result<Self, Error> {
         let ft_metrics = try!(ft_face.size_metrics().ok_or(Error::MissingMetrics(0)));
         let width      = (ft_to_pixels(ft_metrics.max_advance) + 1) as u32;
         let height     = (ft_to_pixels(ft_metrics.height) + 1) as u32;
@@ -151,13 +153,13 @@ impl<'a> Renderer<u8> for FreeType<'a> {
         use std::borrow::Cow;
 
         // Build target bitmask
-        let target = ft::face::RENDER |
-            if self.render_mode.antialias { ft::face::LoadFlag::empty() } else { ft::face::TARGET_MONO } |
+        let target = face::RENDER |
+            if self.render_mode.antialias { face::LoadFlag::empty() } else { face::TARGET_MONO } |
             if let Some(hint) = self.render_mode.hinting {
-                (if hint.autohint { ft::face::FORCE_AUTOHINT } else { ft::face::LoadFlag::empty() }) |
-                (if hint.light    { ft::face::TARGET_LIGHT   } else { ft::face::LoadFlag::empty() })
+                (if hint.autohint { face::FORCE_AUTOHINT } else { face::LoadFlag::empty() }) |
+                (if hint.light    { face::TARGET_LIGHT   } else { face::LoadFlag::empty() })
             } else {
-                ft::face::NO_HINTING
+                face::NO_HINTING
             };
 
         try!(self.ft_face.load_char(glyph, target));

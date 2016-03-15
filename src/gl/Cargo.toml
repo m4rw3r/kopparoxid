@@ -1,0 +1,12 @@
+[package]
+name    = "cu2o_gl"
+version = "0.0.1"
+
+[dependencies]
+bitflags    = "*"
+glium       = "*"
+glutin      = "*"
+freetype-rs = "*"
+log         = "*"
+
+cu2o_term = { path = "../term" }

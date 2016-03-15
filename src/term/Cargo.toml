@@ -1,5 +1,5 @@
 [package]
-name        = "kopparoxid-term"
+name        = "cu2o_term"
 version     = "0.0.1"
 description = "Terminal simulation and control-seuence management"
 

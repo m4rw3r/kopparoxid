@@ -1,11 +1,13 @@
 #[macro_use]
 extern crate log;
 extern crate env_logger;
-extern crate kopparoxid;
 extern crate mio;
-extern crate kopparoxid_term as term;
+extern crate cu2o_term;
+extern crate cu2o_loop;
+extern crate cu2o_window;
+extern crate cu2o_gl;
 #[macro_use]
-extern crate kopparoxid_system as system;
+extern crate cu2o_system;
 
 use std::env;
 use std::process;
@@ -13,13 +15,13 @@ use std::io::Write;
 use std::mem::transmute;
 use std::sync::mpsc::{channel, Sender};
 
-use kopparoxid::event_loop::{self, Message};
-use kopparoxid::gl::glyph::{FreeTypeConfig, HintMode};
-use kopparoxid::window::{Action, Font, FontFaces, Window, WindowProxy};
+use cu2o_gl::glyph::{FreeTypeConfig, HintMode};
+use cu2o_loop::Message;
+use cu2o_system::{AtomicPtr, Pty, SignalHandler, ProcessId, Signal};
+use cu2o_system::{create_session, create_process_group, execvp, fork, kill, signal};
+use cu2o_term::color;
+use cu2o_window::{Action, Font, FontFaces, Window, WindowProxy};
 use mio::unix::{pipe, PipeWriter};
-use system::{create_session, create_process_group, execvp, fork, kill, signal};
-use system::{AtomicPtr, Pty, SignalHandler, ProcessId, Signal};
-use term::color;
 
 /// Writer part of the selfpipe used by exit signal handler.
 ///
@@ -93,16 +95,16 @@ impl Drop for DropHup {
 const OVERRIDE_ERR: &'static str = "failed to override file descriptors for child";
 const SIGNAL_ERR:   &'static str = "failed to reset signal handlers for child";
 
-pub fn run_sh(m: Pty, s: Pty) -> ! {
+fn run_sh(m: Pty, s: Pty) -> ! {
     // Get rid of the master fd before running the shell
     drop(m);
 
     // Needed to make sure that children receive the SIGWINCH signal
     create_session().expect("failed to create session");
 
-    s.override_fd(system::STDIN_FILENO).expect(OVERRIDE_ERR);
-    s.override_fd(system::STDOUT_FILENO).expect(OVERRIDE_ERR);
-    s.override_fd(system::STDERR_FILENO).expect(OVERRIDE_ERR);
+    s.override_fd(cu2o_system::STDIN_FILENO).expect(OVERRIDE_ERR);
+    s.override_fd(cu2o_system::STDOUT_FILENO).expect(OVERRIDE_ERR);
+    s.override_fd(cu2o_system::STDERR_FILENO).expect(OVERRIDE_ERR);
 
     signal(Signal::SigChld, SignalHandler::Default).expect(SIGNAL_ERR);
     signal(Signal::SigHup,  SignalHandler::Default).expect(SIGNAL_ERR);
@@ -179,7 +181,7 @@ fn main() {
             unsafe { WINQUEUE.swap(Box::new(tx)) };
 
             // Start terminal
-            let (terminal, msg) = event_loop::run(m, pid, Some(recv_stop), win.create_proxy());
+            let (terminal, msg) = cu2o_loop::run(m, pid, Some(recv_stop), win.create_proxy());
 
             // Run window
             win.run(terminal, msg.clone());

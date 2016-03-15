@@ -2,20 +2,20 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Receiver;
 
-use event_loop::Message;
-use gl::glyph::{self, FreeType, FreeTypeConfig, Map, MapError, Renderer};
-use gl::glyph::Error as GlyphError;
-use gl::term::{GlTerm, FontStyle};
-use glium::{Display, DisplayBuild};
+use cu2o_gl::glyph::Error as GlyphError;
+use cu2o_gl::glyph::{FreeType, FreeTypeConfig, Map, MapError, Renderer};
+use cu2o_gl::{GlTerm, FontStyle};
+use cu2o_loop::Message;
+use cu2o_term::Term;
+use cu2o_term::color::Manager;
+use freetype::Error as FtError;
+use freetype::Library as FtLibrary;
 use glium::backend::Facade;
-use glutin::{Event, GlRequest, WindowBuilder};
+use glium::{Display, DisplayBuild};
 use glutin::Api::OpenGl;
-use term::color::Manager;
-use time::{Duration, PreciseTime};
-use ft;
-use ft::Error as FtError;
-use term::Term;
+use glutin::{Event, GlRequest, WindowBuilder};
 use mio::Sender;
+use time::{Duration, PreciseTime};
 
 pub use glutin::WindowProxy;
 
@@ -62,7 +62,7 @@ pub struct FontFaces<'a> {
     pub bold_italic: Option<Font<'a>>,
 }
 
-fn load_font<'a, 'b>(f: &'a mut ft::Library, font: Font<'b>, scale: f32) -> Result<Box<Renderer<u8> + 'static>, Error> {
+fn load_font<'a, 'b>(f: &'a mut FtLibrary, font: Font<'b>, scale: f32) -> Result<Box<Renderer<u8> + 'static>, Error> {
     let ft_face = try!(f.new_face(font.path, 0).map_err(|e| Error::FreeTypeError(font.path.to_owned(), e)));
 
     try!(ft_face.set_pixel_sizes(0, (font.size as f32 * scale) as u32).map_err(|e| Error::FreeTypeError(font.path.to_owned(), e)));
@@ -72,8 +72,8 @@ fn load_font<'a, 'b>(f: &'a mut ft::Library, font: Font<'b>, scale: f32) -> Resu
 }
 
 impl<'a> FontFaces<'a> {
-    pub fn load_fonts<'b, 'c>(self, f: &'c mut ft::Library, m: &'b mut Map<FontStyle>, scale: f32) -> Result<(), Error> {
-        use gl::term::FontStyle::*;
+    pub fn load_fonts<'b, 'c>(self, f: &'c mut FtLibrary, m: &'b mut Map<FontStyle>, scale: f32) -> Result<(), Error> {
+        use cu2o_gl::FontStyle::*;
 
         try!(m.add_renderer(Regular, try!(load_font(f, self.regular, scale))));
 
@@ -115,8 +115,8 @@ impl<C> Window<C>
             .unwrap();
 
         let ctx        = display.get_context().clone();
-        let mut ft_lib = ft::Library::init().unwrap();
-        let mut f_map  = glyph::Map::new(ctx.clone());
+        let mut ft_lib = FtLibrary::init().unwrap();
+        let mut f_map  = Map::new(ctx.clone());
         let scale      = display.get_window().map(|w| w.hidpi_factor()).unwrap_or(1.0);
 
         faces.load_fonts(&mut ft_lib, &mut f_map, scale).unwrap();

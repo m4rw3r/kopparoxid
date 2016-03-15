@@ -1,10 +1,12 @@
-use gl::glyph;
-use glium::backend::Context;
-use glium;
 use std::rc::Rc;
 
-use term::{self, Cell, CharMode, Display};
-use term::color::Manager;
+use glium::backend::Context;
+use glium;
+
+use glyph;
+
+use cu2o_term::{Cell, CharMode, Display, Term};
+use cu2o_term::color::Manager;
 
 #[derive(Copy, Clone, Debug)]
 struct ColoredVertex {
@@ -26,7 +28,7 @@ pub enum FontStyle {
 
 impl From<CharMode> for FontStyle {
     fn from(m: CharMode) -> Self {
-        use term::char_mode::*;
+        use cu2o_term::char_mode::*;
 
         match (m.contains(BOLD), m.contains(ITALIC)) {
             (true, true)   => FontStyle::BoldItalic,
@@ -36,8 +38,6 @@ impl From<CharMode> for FontStyle {
         }
     }
 }
-
-pub type Renderer<'a> = glyph::Renderer<u8> + 'a;
 
 /// Structure used to render a Term instance onto a GL surface
 pub struct GlTerm<C: Manager> {
@@ -187,7 +187,7 @@ impl<C: Manager> GlTerm<C> {
     }
 
     #[inline]
-    fn load_glyphs(&mut self, t: &term::Term) {
+    fn load_glyphs(&mut self, t: &Term) {
         t.glyphs(|g, m| {
             let t = m.into();
 
@@ -207,7 +207,7 @@ impl<C: Manager> GlTerm<C> {
         self.glyphs.get(f, chr).or_else(|| self.glyphs.get(FontStyle::Regular, chr))
     }
 
-    fn load_bg_vertices(&mut self, t: &term::Term) {
+    fn load_bg_vertices(&mut self, t: &Term) {
         let cellsize = self.cellsize;
 
         self.bg_buffer.truncate(0);
@@ -229,8 +229,8 @@ impl<C: Manager> GlTerm<C> {
         })
     }
 
-    fn load_fg_vertices(&mut self, t: &term::Term) {
-        use term::char_mode::BOLD;
+    fn load_fg_vertices(&mut self, t: &Term) {
+        use cu2o_term::char_mode::BOLD;
 
         let cellsize = self.cellsize;
 
@@ -243,7 +243,7 @@ impl<C: Manager> GlTerm<C> {
                     // let fg       = self.colors.fg(c.fg());
                     // TODO: Configuration for bold => bright
                     let fg = self.colors.fg(if c.attrs().contains(BOLD) {
-                        use term::ctrl::Color::*;
+                        use cu2o_term::ctrl::Color::*;
 
                         match c.fg() {
                             Black   => Palette(8),
@@ -272,7 +272,7 @@ impl<C: Manager> GlTerm<C> {
         })
     }
 
-    pub fn load_vertices(&mut self, t: &term::Term) {
+    pub fn load_vertices(&mut self, t: &Term) {
         self.load_glyphs(t);
 
         self.load_bg_vertices(t);

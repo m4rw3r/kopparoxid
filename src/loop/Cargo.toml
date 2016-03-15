@@ -1,0 +1,13 @@
+[package]
+name = "cu2o_loop"
+version = "0.0.1"
+
+[dependencies]
+mio         = "*"
+glutin      = "*"
+chomp       = "*"
+log         = "*"
+
+cu2o_term   = { path = "../term" }
+cu2o_system = { path = "../system" }
+

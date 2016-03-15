@@ -1,5 +1,13 @@
 //! Event loop management for child-process.
 
+#[macro_use]
+extern crate log;
+extern crate mio;
+extern crate chomp;
+extern crate glutin;
+extern crate cu2o_term;
+extern crate cu2o_system;
+
 use std::sync::{Arc, Mutex};
 use std::io::{self, Write};
 use std::thread;
@@ -13,8 +21,8 @@ use mio::unix::PipeReader;
 
 use glutin::WindowProxy;
 
-use term::{ctrl, Term};
-use system::{kill, ProcessId, Pty, Signal};
+use cu2o_term::{ctrl, Term};
+use cu2o_system::{kill, ProcessId, Pty, Signal};
 
 const INPUT: Token = Token(0);
 const EXIT:  Token = Token(1);

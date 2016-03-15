@@ -1,0 +1,15 @@
+[package]
+name = "cu2o_window"
+version = "0.0.1"
+
+[dependencies]
+glutin      = "*"
+glium       = "*"
+freetype-rs = "*"
+log         = "*"
+mio         = "*"
+time        = "*"
+
+cu2o_term   = { path = "../term" }
+cu2o_gl     = { path = "../gl" }
+cu2o_loop   = { path = "../loop" }

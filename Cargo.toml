@@ -4,16 +4,12 @@ version = "0.0.1"
 authors = ["Martin Wernstål <m4rw3r@gmail.com>"]
 
 [dependencies]
-bitflags    = "*"
-chomp       = "*"
-freetype-rs = "*"
-glium       = "*"
-glutin      = "*"
 log         = "*"
-num         = "*"
-mio         = "*"
-time        = "*"
 env_logger  = "*"
+mio         = "*"
 
-kopparoxid-term   = { path = "./term" }
-kopparoxid-system = { path = "./system" }
+cu2o_term   = { path = "src/term" }
+cu2o_system = { path = "src/system" }
+cu2o_window = { path = "src/window" }
+cu2o_gl     = { path = "src/gl" }
+cu2o_loop   = { path = "src/loop" }

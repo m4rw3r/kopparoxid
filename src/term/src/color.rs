@@ -1,3 +1,4 @@
+// TODO: Move this to gl
 use ctrl;
 
 /// Translates a color code into RGB float values in the range [0, 1] suitable for rendering.
