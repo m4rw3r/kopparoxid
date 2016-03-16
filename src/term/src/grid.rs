@@ -82,8 +82,6 @@ impl<T: Copy + Default> Grid<T> {
             row.extend((cols..width).map(|_| <T>::default()));
         }
 
-        // TODO: Reset scrolling region?
-
         let len = self.data.len();
 
         self.data.extend((len..height).map(|_| (0..width).map(|_| Default::default()).collect()));
@@ -103,24 +101,23 @@ impl<T: Copy + Default> Grid<T> {
     // Non-inclusive bottom margin
     fn screg_bot(&self) -> usize {
         if let Some(n) = self.screg.bot {
-            n
+            cmp::min(n, self.data.len())
         } else {
             self.data.len()
         }
     }
 
-    /// Scrolls the grid down `rows` keeping lines < `start`, adding empty lines at the bottom.
-    fn scroll_down(&mut self, start: usize, rows: usize) {
-        // Saturate so we do nothing if we scroll more
+    /// Scrolls the grid down `rows` keeping lines < scroll region top, adding empty lines at the bottom.
+    fn scroll_down(&mut self, rows: usize) {
         let len   = self.screg_bot();
+        // Saturate to clear whole screen if more is scrolled
         let end   = len.saturating_sub(rows);
-        let start = cmp::min(start, end);
+        let start = cmp::min(self.screg.top, end);
 
         for i in start..end {
             self.data.swap(i, i + rows);
         }
 
-        // Saturate to clear whole screen if more is scrolled
         for row in self.data[end..len].iter_mut() {
             for c in row.iter_mut() {
                 *c = Default::default();
@@ -129,10 +126,13 @@ impl<T: Copy + Default> Grid<T> {
     }
 
     /// Scrlls the grid up `rows` keeping lines < `start`, adding empty lines at the top.
-    fn scroll_up(&mut self, start: usize, rows: usize) {
-        let start = start + rows;
-        let end   = self.screg_bot().saturating_sub(1);
-        let keep  = cmp::min(start, end);
+    /// If `start` is not provided, scroll-region top is used.
+    fn scroll_up(&mut self, start: Option<usize>, rows: usize) {
+        let start = start.unwrap_or(self.screg.top);
+        let end   = self.screg_bot();
+        let keep  = cmp::min(start + rows, end);
+
+        println!("start: {}, keep: {}, end: {}", start, keep, end);
 
         for i in (keep..end).rev() {
             self.data.swap(i - keep, i);
@@ -150,9 +150,7 @@ impl<T: Copy + Default> Grid<T> {
         if cursor.state.contains(AUTOWRAP | WRAP_NEXT) && cursor.col + 1 >= self.width {
             // Move cursor row down one and scroll if needed
             if cursor.row + 1 >= self.height {
-                let start = self.screg.top;
-
-                self.scroll_down(start, 1);
+                self.scroll_down(1);
             } else {
                 cursor.row += 1;
             }
@@ -181,13 +179,15 @@ impl<T: Copy + Default> Grid<T> {
     pub fn insert_lines(&mut self, cursor: &Cursor, n: usize) {
         if cursor.row >= self.screg.top && cursor.row < self.screg_bot() {
             // Only scroll if the cursor is inside of the area
-            self.scroll_up(cursor.row, n);
+            info!("Scrolling up {} to insert lines", n);
+
+            self.scroll_up(Some(cursor.row), n);
         }
     }
 
     #[inline]
     pub fn move_cursor<M: Movement>(&mut self, cursor: &mut Cursor, direction: M) {
-        info!("Moving cursor from (l: {}, r: {}): {:?}", cursor.row, cursor.col, direction);
+        trace!("Moving cursor from (l: {}, r: {}): {:?}", cursor.row, cursor.col, direction);
 
         Movement::move_cursor(&direction, self, cursor)
     }
@@ -339,18 +339,16 @@ impl Movement for Unbounded {
     fn move_cursor<T: Copy + Default>(&self, g: &mut Grid<T>, c: &mut Cursor) {
         use self::Line::*;
 
-        let top = g.screg.top;
-
         match self.0 {
             Up(n)    => {
-                g.scroll_up(top, -cmp::min(0, c.row as isize - n as isize) as usize);
+                g.scroll_up(None, -cmp::min(0, c.row as isize - n as isize) as usize);
 
                 c.row = c.row.saturating_sub(n);
             },
             Down(n)  => {
                 let last_row = (g.height - 1) as isize;
 
-                g.scroll_down(top, cmp::max(0, n as isize + c.row as isize - last_row) as usize);
+                g.scroll_down(cmp::max(0, n as isize + c.row as isize - last_row) as usize);
 
                 c.row = cmp::min(c.row + n, g.height - 1);
             },
